@@ -37,7 +37,7 @@
     </Reference>
     <Reference Include="ETABSv1">
       <HintPath>$(EtabsInstallPath)\ETABSv1.dll</HintPath>
-      <Private>false</Private>
+      <Private>true</Private>
     </Reference>
   </ItemGroup>
 
@@ -46,9 +46,11 @@
     <Compile Include="ETABS\**\*.cs" />
     <Compile Include="Revit\**\*.cs" />
   </ItemGroup>
+
   <ItemGroup>
     <Page Include="Revit\UI\*.xaml" />
   </ItemGroup>
+
   <PropertyGroup>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <EnableDefaultPageItems>false</EnableDefaultPageItems>
