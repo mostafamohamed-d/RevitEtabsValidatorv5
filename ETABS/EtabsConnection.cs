@@ -45,8 +45,11 @@ public sealed class EtabsConnection
                     if (result != null)
                     {
                         EtabsObject = result;
-                        Message = "Connected to the running ETABS instance through ETABSv1.Helper.";
-                        return IsConnected;
+                        if (IsConnected)
+                        {
+                            Message = "Connected to the running ETABS instance through ETABSv1.Helper.";
+                            return true;
+                        }
                     }
                 }
             }
@@ -85,7 +88,7 @@ public sealed class EtabsConnection
         }
         catch (Exception ex)
         {
-            Message = "No running ETABS instance could be attached. " + ex.Message;
+            Message = "No running ETABS instance could be attached. " + Unwrap(ex).Message;
             return false;
         }
     }
@@ -108,14 +111,14 @@ public sealed class EtabsConnection
                     {
                         EtabsObject = created;
                         var rc = InvokeInt(EtabsObject, "ApplicationStart");
-                        if (rc == 0)
+                        if (rc == 0 && IsConnected)
                         {
                             Message = "ETABS started and connected through ETABSv1.Helper.";
-                            return IsConnected;
+                            return true;
                         }
 
                         Message = $"ETABS object was created, but ApplicationStart returned {rc}.";
-                        return IsConnected;
+                        if (IsConnected) return true;
                     }
                 }
             }
@@ -148,7 +151,7 @@ public sealed class EtabsConnection
         }
         catch (Exception ex)
         {
-            Message = "Unable to start ETABS: " + ex.Message;
+            Message = "Unable to start ETABS: " + Unwrap(ex).Message;
             return false;
         }
     }
@@ -175,6 +178,9 @@ public sealed class EtabsConnection
             return false;
         }
     }
+
+    // Backward-compatible overload used by the current UI.
+    public bool SetUnitsKnMmC() => SetUnitsKnMmC(out _);
 
     private static object? GetProperty(object? target, string name)
     {
