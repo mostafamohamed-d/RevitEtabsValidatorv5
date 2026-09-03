@@ -25,54 +25,61 @@ public sealed class EtabsConnection
         EtabsObject = null;
         var diagnostics = new List<string>();
 
-        // ETABS 20.2+ supports attaching to a specific running instance by PID.
-        // This is more reliable than relying only on the single active instance.
         try
         {
             var helperType = Type.GetTypeFromProgID(HelperProgId, throwOnError: false);
-            if (helperType != null)
+            if (helperType == null)
+            {
+                diagnostics.Add("ETABSv1.Helper ProgID was not found.");
+            }
+            else
             {
                 var helper = Activator.CreateInstance(helperType);
-                if (helper != null)
+                if (helper == null)
                 {
-                    var getByProcess = helperType.GetMethod("GetObjectProcess", BindingFlags.Instance | BindingFlags.Public);
-                    if (getByProcess != null)
-                    {
-                        var processes = Process.GetProcessesByName("ETABS")
-                            .OrderBy(p => p.Id)
-                            .ToList();
+                    diagnostics.Add("ETABSv1.Helper could not be created.");
+                }
+                else
+                {
+                    // Invoke directly instead of GetMethod(): COM automation
+                    // methods can be absent from managed reflection metadata
+                    // even though IDispatch exposes them.
+                    var processes = Process.GetProcessesByName("ETABS")
+                        .OrderBy(p => p.Id)
+                        .ToList();
 
-                        foreach (var process in processes)
+                    foreach (var process in processes)
+                    {
+                        try
                         {
-                            try
+                            var result = helperType.InvokeMember(
+                                "GetObjectProcess",
+                                BindingFlags.InvokeMethod,
+                                null,
+                                helper,
+                                new object[] { process.Id });
+
+                            if (result != null)
                             {
-                                var result = getByProcess.Invoke(helper, new object[] { process.Id });
-                                if (result != null)
+                                EtabsObject = result;
+                                if (IsConnected)
                                 {
-                                    EtabsObject = result;
-                                    if (IsConnected)
-                                    {
-                                        Message = $"Connected to ETABS process {process.Id} through ETABSv1.Helper.GetObjectProcess().";
-                                        return true;
-                                    }
+                                    Message = $"Connected to ETABS process {process.Id} through ETABSv1.Helper.GetObjectProcess().";
+                                    return true;
                                 }
                             }
-                            catch (TargetInvocationException ex) when (ex.InnerException != null)
-                            {
-                                diagnostics.Add($"PID {process.Id}: {ex.InnerException.Message}");
-                            }
-                            catch (Exception ex)
-                            {
-                                diagnostics.Add($"PID {process.Id}: {ex.Message}");
-                            }
+                        }
+                        catch (TargetInvocationException ex) when (ex.InnerException != null)
+                        {
+                            diagnostics.Add($"GetObjectProcess PID {process.Id}: {ex.InnerException.Message}");
+                        }
+                        catch (Exception ex)
+                        {
+                            diagnostics.Add($"GetObjectProcess PID {process.Id}: {ex.Message}");
                         }
                     }
-                    else
-                    {
-                        diagnostics.Add("ETABSv1.Helper.GetObjectProcess was not found.");
-                    }
 
-                    // Fallback to CSI's active-instance mechanism.
+                    // If ETABS 22 exposes an active API instance, use it.
                     try
                     {
                         var result = helperType.InvokeMember(
@@ -91,6 +98,8 @@ public sealed class EtabsConnection
                                 return true;
                             }
                         }
+
+                        diagnostics.Add("ETABSv1.Helper.GetObject returned no usable SapModel.");
                     }
                     catch (TargetInvocationException ex) when (ex.InnerException != null)
                     {
@@ -102,35 +111,32 @@ public sealed class EtabsConnection
                     }
                 }
             }
-            else
-            {
-                diagnostics.Add("ETABSv1.Helper ProgID was not found.");
-            }
         }
         catch (Exception ex)
         {
             diagnostics.Add("Helper setup: " + Unwrap(ex).Message);
         }
 
-        // Fallback for installations where Helper is unavailable.
+        // Final fallback: Windows COM running-object table.
         try
         {
             var objectType = Type.GetTypeFromProgID(EtabsObjectProgId, throwOnError: false);
-            if (objectType == null)
-            {
-                diagnostics.Add("ETABS COM ProgID was not found: " + EtabsObjectProgId);
-            }
-            else
+            if (objectType != null)
             {
                 var clsid = objectType.GUID;
                 GetActiveObject(ref clsid, IntPtr.Zero, out var obj);
                 EtabsObject = obj;
-
                 if (IsConnected)
                 {
                     Message = "Connected to the running ETABS instance through the COM running-object table.";
                     return true;
                 }
+
+                diagnostics.Add("COM ROT returned an object, but SapModel was unavailable.");
+            }
+            else
+            {
+                diagnostics.Add("ETABS COM ProgID was not found: " + EtabsObjectProgId);
             }
         }
         catch (Exception ex)
@@ -138,10 +144,9 @@ public sealed class EtabsConnection
             diagnostics.Add("COM ROT: " + Unwrap(ex).Message);
         }
 
-        var detail = diagnostics.Count == 0
-            ? "No connection mechanism returned an ETABS OAPI object."
-            : string.Join(" | ", diagnostics);
-        Message = "No running ETABS instance could be attached. " + detail;
+        Message = diagnostics.Count == 0
+            ? "No running ETABS instance could be attached."
+            : "No running ETABS instance could be attached. " + string.Join(" | ", diagnostics);
         return false;
     }
 
@@ -158,7 +163,13 @@ public sealed class EtabsConnection
                 var helper = Activator.CreateInstance(helperType);
                 if (helper != null)
                 {
-                    var created = TryInvoke(helperType, helper, "CreateObjectProgID", EtabsObjectProgId);
+                    var created = helperType.InvokeMember(
+                        "CreateObjectProgID",
+                        BindingFlags.InvokeMethod,
+                        null,
+                        helper,
+                        new object[] { EtabsObjectProgId });
+
                     if (created != null)
                     {
                         EtabsObject = created;
@@ -184,24 +195,24 @@ public sealed class EtabsConnection
         {
             var t = Type.GetTypeFromProgID(EtabsObjectProgId, throwOnError: true)!;
             EtabsObject = Activator.CreateInstance(t);
-            if (EtabsObject == null)
+            if (EtabsObject != null)
             {
-                Message = "ETABS COM object could not be created.";
-                return false;
+                var rc = InvokeInt(EtabsObject, "ApplicationStart");
+                Message = rc == 0
+                    ? "ETABS started and connected through COM."
+                    : $"ETABS object was created; ApplicationStart returned {rc}.";
+                return IsConnected;
             }
 
-            var rc = InvokeInt(EtabsObject, "ApplicationStart");
-            Message = rc == 0
-                ? "ETABS started and connected through COM."
-                : $"ETABS object was created; ApplicationStart returned {rc}.";
-            return IsConnected;
+            diagnostics.Add("ETABS COM object could not be created.");
         }
         catch (Exception ex)
         {
             diagnostics.Add("COM start: " + Unwrap(ex).Message);
-            Message = "Unable to start ETABS. " + string.Join(" | ", diagnostics);
-            return false;
         }
+
+        Message = "Unable to start ETABS. " + string.Join(" | ", diagnostics);
+        return false;
     }
 
     public bool SetUnitsKnMmC(out string message)
@@ -238,16 +249,6 @@ public sealed class EtabsConnection
             null,
             target,
             null);
-    }
-
-    private static object? TryInvoke(Type targetType, object target, string method, params object[] args)
-    {
-        return targetType.InvokeMember(
-            method,
-            BindingFlags.InvokeMethod,
-            null,
-            target,
-            args);
     }
 
     private static int InvokeInt(object target, string method, params object[] args)
