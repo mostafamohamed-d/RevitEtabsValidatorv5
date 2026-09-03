@@ -1,192 +1,254 @@
-using System.Reflection;
+using ETABSv1;
 using RevitEtabsValidator.Core.Geometry;
 using RevitEtabsValidator.Core.Models;
+
 namespace RevitEtabsValidator.ETABS;
 
+/// <summary>
+/// Reads ETABS 22 frame objects through the typed ETABSv1 OAPI.
+/// The connection layer supplies the typed cSapModel; this reader then calls
+/// FrameObj/PointObj/PropFrame/Story directly instead of reflection so that
+/// the COM ByRef signatures are handled exactly as defined by CSI.
+/// </summary>
 public sealed class EtabsModelReader
 {
-    // NOTE: this class intentionally keeps the original design goal of not
-    // referencing a compiled ETABSv1 interop assembly, so it can attach to
-    // any installed ETABS version by ProgID alone. C#'s `dynamic` keyword
-    // CANNOT be used for this, though: COM methods here take `ref`/`out`
-    // parameters (GetNameList, GetPoints, GetRectangle, ...), and C# refuses
-    // to compile a `ref`/`out` argument on a dynamic call site (CS1975).
-    // The previous version of this file did exactly that and could not build.
-    //
-    // The fix is to go one level lower than `dynamic`: call through
-    // Type.InvokeMember directly (the same mechanism `dynamic` uses
-    // internally, and the same one VB.NET's late binding has always used for
-    // COM). InvokeMember returns the method's return value AND writes any
-    // ByRef parameter's new value back into the same `object[] args` array
-    // element, so each call below is: build an args array with initial
-    // values, invoke, then read the updated values back out of that array.
+    private readonly cSapModel _sap;
 
-    private readonly object _sap;
-    public EtabsModelReader(object sap) => _sap = sap;
+    public EtabsModelReader(cSapModel sap)
+    {
+        _sap = sap ?? throw new ArgumentNullException(nameof(sap));
+    }
 
-    public List<ColumnElement> ReadColumns() => ReadFrames<ColumnElement>(true);
-    public List<BeamElement> ReadBeams() => ReadFrames<BeamElement>(false);
+    public List<ColumnElement> ReadColumns() => ReadFrames<ColumnElement>(eFrameDesignOrientation.Column);
 
-    private List<T> ReadFrames<T>(bool columns) where T : ElementBase, new()
+    public List<BeamElement> ReadBeams() => ReadFrames<BeamElement>(eFrameDesignOrientation.Beam);
+
+    private List<T> ReadFrames<T>(eFrameDesignOrientation wantedOrientation)
+        where T : ElementBase
     {
         var list = new List<T>();
+        var frames = _sap.FrameObj;
 
-        object[] nameListArgs = { 0, Array.Empty<string>() };
-        int rc = (int)Invoke(_sap, "FrameObj.GetNameList", nameListArgs);
-        if (rc != 0) return list;
-        var names = (string[])nameListArgs[1] ?? Array.Empty<string>();
+        int count = 0;
+        string[] names = Array.Empty<string>();
+        int rc = frames.GetNameList(ref count, ref names);
+        if (rc != 0 || names == null || names.Length == 0)
+            return list;
+
+        var storyElevations = ReadStoryElevations();
 
         foreach (var name in names)
         {
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
             try
             {
-                object[] pointArgs = { name, "", "" };
-                Invoke(_sap, "FrameObj.GetPoints", pointArgs);
-                string p1 = (string)pointArgs[1];
-                string p2 = (string)pointArgs[2];
-                if (string.IsNullOrWhiteSpace(p1) || string.IsNullOrWhiteSpace(p2)) continue;
+                var orientation = eFrameDesignOrientation.Null;
+                rc = frames.GetDesignOrientation(name, ref orientation);
+                if (rc != 0 || orientation != wantedOrientation)
+                    continue;
 
-                var a = Point(p1);
-                var b = Point(p2);
+                string point1 = string.Empty;
+                string point2 = string.Empty;
+                rc = frames.GetPoints(name, ref point1, ref point2);
+                if (rc != 0 || string.IsNullOrWhiteSpace(point1) || string.IsNullOrWhiteSpace(point2))
+                    continue;
 
-                string label = name, story = "";
+                var start = GetPoint(point1);
+                var end = GetPoint(point2);
+
+                string label = name;
+                string story = string.Empty;
                 try
                 {
-                    object[] labelArgs = { name, "", "" };
-                    Invoke(_sap, "FrameObj.GetLabelFromName", labelArgs);
-                    label = (string)labelArgs[1];
-                    story = (string)labelArgs[2];
+                    string tmpLabel = string.Empty;
+                    string tmpStory = string.Empty;
+                    if (frames.GetLabelFromName(name, ref tmpLabel, ref tmpStory) == 0)
+                    {
+                        if (!string.IsNullOrWhiteSpace(tmpLabel))
+                            label = tmpLabel;
+                        story = tmpStory ?? string.Empty;
+                    }
                 }
-                catch { /* keep defaults - label falls back to the frame name */ }
+                catch
+                {
+                    // Keep the frame name and empty story; we can infer story below.
+                }
 
-                string prop = "";
+                if (string.IsNullOrWhiteSpace(story))
+                    story = ClosestStory((start.Z + end.Z) / 2.0, storyElevations);
+
+                string sectionName = string.Empty;
                 try
                 {
-                    // SAuto is documented by CSI as a string (the auto-select list
-                    // name when AutoSelect=True), not a bool - matching the real
-                    // type here matters for COM marshaling, unlike a plain dynamic
-                    // call where a mismatch might silently coerce.
-                    object[] secArgs = { name, "", "" };
-                    Invoke(_sap, "FrameObj.GetSection", secArgs);
-                    prop = (string)secArgs[1];
+                    string prop = string.Empty;
+                    string autoSelect = string.Empty;
+                    if (frames.GetSection(name, ref prop, ref autoSelect) == 0)
+                        sectionName = prop ?? string.Empty;
                 }
-                catch { /* section stays unresolved - width/depth will read as 0 */ }
-
-                (double w, double d) = Section(prop);
-
-                // ETABS story label is preferred; if unavailable infer by closest story elevation to midpoint.
-                if (string.IsNullOrWhiteSpace(story)) story = ClosestStory((a.Z + b.Z) / 2);
-
-                if (columns)
+                catch
                 {
-                    double angle = 0;
+                    // Leave section unresolved; width/depth will be zero.
+                }
+
+                var (width, depth) = ReadRectangleSection(sectionName);
+
+                if (wantedOrientation == eFrameDesignOrientation.Column)
+                {
+                    double angle = 0.0;
                     try
                     {
-                        object[] axesArgs = { name, 0.0, 0.0 };
-                        Invoke(_sap, "FrameObj.GetLocalAxes", axesArgs);
-                        angle = (double)axesArgs[2];
+                        bool advanced = false;
+                        if (frames.GetLocalAxes(name, ref angle, ref advanced) != 0)
+                            angle = 0.0;
                     }
-                    catch { /* rotation stays 0 if this frame's axes can't be read */ }
-
-                    var c = new ColumnElement
+                    catch
                     {
-                        Id = name, Name = label, SectionName = prop, LevelName = story,
-                        Source = SourceApplication.Etabs, StartPoint = a, EndPoint = b,
-                        BaseElevation = Math.Min(a.Z, b.Z), TopElevation = Math.Max(a.Z, b.Z),
-                        Width = w, Depth = d, Rotation = angle
-                    };
-                    list.Add((T)(ElementBase)c);
+                        angle = 0.0;
+                    }
+
+                    list.Add((T)(ElementBase)new ColumnElement
+                    {
+                        Id = name,
+                        Name = label,
+                        SectionName = sectionName,
+                        LevelName = story,
+                        Source = SourceApplication.Etabs,
+                        StartPoint = start,
+                        EndPoint = end,
+                        BaseElevation = Math.Min(start.Z, end.Z),
+                        TopElevation = Math.Max(start.Z, end.Z),
+                        Width = width,
+                        Depth = depth,
+                        Rotation = angle
+                    });
                 }
                 else
                 {
                     list.Add((T)(ElementBase)new BeamElement
                     {
-                        Id = name, Name = label, SectionName = prop, LevelName = story,
-                        Source = SourceApplication.Etabs, StartPoint = a, EndPoint = b,
-                        Width = w, Depth = d
+                        Id = name,
+                        Name = label,
+                        SectionName = sectionName,
+                        LevelName = story,
+                        Source = SourceApplication.Etabs,
+                        StartPoint = start,
+                        EndPoint = end,
+                        Width = width,
+                        Depth = depth
                     });
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"ETABS frame {name}: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"ETABS frame {name} could not be read: {ex.Message}");
             }
         }
 
         return list;
     }
 
-    private Point3D Point(string pointName)
+    private Point3D GetPoint(string pointName)
     {
-        object[] args = { pointName, 0.0, 0.0, 0.0, "Global" };
-        Invoke(_sap, "PointObj.GetCoordCartesian", args);
-        return new Point3D((double)args[1], (double)args[2], (double)args[3]);
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        int rc = _sap.PointObj.GetCoordCartesian(pointName, ref x, ref y, ref z, "Global");
+        if (rc != 0)
+            throw new InvalidOperationException($"PointObj.GetCoordCartesian failed for '{pointName}' with return code {rc}.");
+
+        return new Point3D(x, y, z);
     }
 
-    private (double w, double d) Section(string prop)
+    private (double Width, double Depth) ReadRectangleSection(string sectionName)
     {
-        if (string.IsNullOrWhiteSpace(prop)) return (0, 0);
+        if (string.IsNullOrWhiteSpace(sectionName))
+            return (0.0, 0.0);
+
         try
         {
-            object[] args = { prop, "", 0.0, 0.0 };
-            int rc = (int)Invoke(_sap, "PropFrame.GetRectangle", args);
-            if (rc == 0) return ((double)args[3], (double)args[2]); // t2 = width, t3 = depth
-        }
-        catch { /* not a rectangular section, or the call failed - treat as unknown */ }
-        return (0, 0);
-    }
+            string fileName = string.Empty;
+            string material = string.Empty;
+            double t3 = 0.0;
+            double t2 = 0.0;
+            int color = 0;
+            string notes = string.Empty;
+            string guid = string.Empty;
 
-    private string ClosestStory(double z)
-    {
-        try
-        {
-            object[] listArgs = { 0, Array.Empty<string>() };
-            Invoke(_sap, "Story.GetNameList", listArgs);
-            var stories = (string[])listArgs[1] ?? Array.Empty<string>();
+            int rc = _sap.PropFrame.GetRectangle(
+                sectionName,
+                ref fileName,
+                ref material,
+                ref t3,
+                ref t2,
+                ref color,
+                ref notes,
+                ref guid);
 
-            string best = "";
-            double bestDelta = double.MaxValue;
-            foreach (var s in stories)
+            if (rc == 0)
             {
-                double elevation;
-                try
-                {
-                    object[] elevArgs = { s, 0.0 };
-                    Invoke(_sap, "Story.GetElevation", elevArgs);
-                    elevation = (double)elevArgs[1];
-                }
-                catch { continue; }
-
-                var delta = Math.Abs(elevation - z);
-                if (delta < bestDelta) { bestDelta = delta; best = s; }
+                // ETABS rectangle definition: T3 and T2 are the two section dimensions.
+                // The comparer treats Width/Depth as the two reported section dimensions.
+                return (t2, t3);
             }
-            return best;
         }
-        catch { return ""; }
+        catch
+        {
+            // Non-rectangular section or unavailable property: keep dimensions unknown.
+        }
+
+        return (0.0, 0.0);
     }
 
-    /// <summary>
-    /// Navigates dotted COM property paths (e.g. "FrameObj.GetNameList" means
-    /// "call GetNameList on the SapModel.FrameObj sub-object") and invokes the
-    /// final method via reflection, which is the one late-binding mechanism
-    /// that supports ByRef parameters from C#. Returns the method's return
-    /// value; any ByRef argument's new value is written back into `args`
-    /// in place, so read updated values out of `args` after calling this.
-    /// </summary>
-    private static object Invoke(object target, string path, object[] args)
+    private Dictionary<string, double> ReadStoryElevations()
     {
-        var parts = path.Split('.');
-        object current = target;
+        var result = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
 
-        for (int i = 0; i < parts.Length - 1; i++)
+        try
         {
-            current = current.GetType().InvokeMember(
-                parts[i], BindingFlags.GetProperty, null, current, null)
-                ?? throw new InvalidOperationException($"COM property '{parts[i]}' returned null while resolving '{path}'.");
+            int count = 0;
+            string[] names = Array.Empty<string>();
+            int rc = _sap.Story.GetNameList(ref count, ref names);
+            if (rc != 0 || names == null)
+                return result;
+
+            foreach (var name in names)
+            {
+                if (string.IsNullOrWhiteSpace(name))
+                    continue;
+
+                double elevation = 0.0;
+                if (_sap.Story.GetElevation(name, ref elevation) == 0)
+                    result[name] = elevation;
+            }
+        }
+        catch
+        {
+            // Story information is supplemental; frame labels can still provide the story.
         }
 
-        return current.GetType().InvokeMember(
-            parts[^1], BindingFlags.InvokeMethod, null, current, args)
-            ?? throw new InvalidOperationException($"COM method '{path}' returned null.");
+        return result;
+    }
+
+    private static string ClosestStory(double z, IReadOnlyDictionary<string, double> stories)
+    {
+        if (stories.Count == 0)
+            return string.Empty;
+
+        string best = string.Empty;
+        double bestDelta = double.MaxValue;
+
+        foreach (var pair in stories)
+        {
+            double delta = Math.Abs(pair.Value - z);
+            if (delta < bestDelta)
+            {
+                bestDelta = delta;
+                best = pair.Key;
+            }
+        }
+
+        return best;
     }
 }
