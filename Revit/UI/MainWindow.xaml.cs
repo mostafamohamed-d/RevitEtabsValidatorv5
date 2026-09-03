@@ -137,12 +137,29 @@ public partial class MainWindow : Window
                 SetStatus("Warning: ETABS units were not confirmed as kN-mm-C.");
 
             var reader = new EtabsModelReader(_etabs.SapModel);
-            _etabsColumns = reader.ReadColumns();
-            _etabsBeams = reader.ReadBeams();
+            var columns = reader.ReadColumns();
+            var beams = reader.ReadBeams();
+
+            // Project rule: ETABS frame objects whose INTERNAL FRAME NAME starts
+            // with "0" are excluded from Revit-vs-ETABS validation. This is a
+            // frame-name rule, not a section-property-name rule.
+            int excludedColumns = columns.Count(x => !string.IsNullOrEmpty(x.Id) && x.Id.StartsWith("0", StringComparison.Ordinal));
+            int excludedBeams = beams.Count(x => !string.IsNullOrEmpty(x.Id) && x.Id.StartsWith("0", StringComparison.Ordinal));
+
+            _etabsColumns = columns
+                .Where(x => string.IsNullOrEmpty(x.Id) || !x.Id.StartsWith("0", StringComparison.Ordinal))
+                .ToList();
+
+            _etabsBeams = beams
+                .Where(x => string.IsNullOrEmpty(x.Id) || !x.Id.StartsWith("0", StringComparison.Ordinal))
+                .ToList();
 
             EtabsColCount.Text = _etabsColumns.Count.ToString();
             EtabsBeamCount.Text = _etabsBeams.Count.ToString();
-            SetStatus($"ETABS read complete: {_etabsColumns.Count} columns, {_etabsBeams.Count} beams.");
+
+            SetStatus(
+                $"ETABS read complete: {_etabsColumns.Count} columns, {_etabsBeams.Count} beams. " +
+                $"Excluded frame names starting with 0: {excludedColumns} columns, {excludedBeams} beams.");
         }
         catch (Exception ex)
         {
@@ -195,26 +212,6 @@ public partial class MainWindow : Window
                 return;
             }
 
-            // ETABS can contain non-structural/auxiliary analysis frames whose
-            // internal frame names start with "0". They are intentionally excluded
-            // from validation and from the validation counts/results.
-            var originalEtabsColumnCount = _etabsColumns.Count;
-            var originalEtabsBeamCount = _etabsBeams.Count;
-
-            _etabsColumns = _etabsColumns
-                .Where(IsIncludedEtabsFrame)
-                .ToList();
-
-            _etabsBeams = _etabsBeams
-                .Where(IsIncludedEtabsFrame)
-                .ToList();
-
-            var excludedColumns = originalEtabsColumnCount - _etabsColumns.Count;
-            var excludedBeams = originalEtabsBeamCount - _etabsBeams.Count;
-
-            EtabsColCount.Text = _etabsColumns.Count.ToString();
-            EtabsBeamCount.Text = _etabsBeams.Count.ToString();
-
             var t = Tol();
             var cmp = new ModelComparer();
             _columnReport = cmp.CompareColumns(_revitColumns, _etabsColumns, t);
@@ -230,21 +227,12 @@ public partial class MainWindow : Window
             RefreshVisible();
             UpdateSummary();
             PopulateFloors();
-
-            SetStatus(
-                $"Validation complete: {_all.Count} comparison results. " +
-                $"Excluded ETABS frames starting with 0: {excludedColumns} columns, {excludedBeams} beams.");
+            SetStatus($"Validation complete: {_all.Count} comparison results.");
         }
         catch (Exception ex)
         {
             SetStatus("Validation failed: " + ex);
         }
-    }
-
-    private static bool IsIncludedEtabsFrame(ElementBase element)
-    {
-        // The rule applies to the ETABS internal frame name/ID, not the Revit element ID.
-        return !string.IsNullOrWhiteSpace(element.Id) && !element.Id.StartsWith("0", StringComparison.Ordinal);
     }
 
     private void UpdateSummary()
@@ -470,34 +458,12 @@ public partial class MainWindow : Window
         sb.AppendLine("Type,Level,Revit,ETABS,Status,Severity,Pos_mm,Elev_mm,Width_mm,Depth_mm,Length_mm,Rotation_deg,Confidence,Message");
         foreach (var x in _all)
         {
-            var vals = new[]
-            {
-                x.ElementType,
-                x.StoryOrLevel,
-                x.RevitName,
-                x.EtabsName,
-                x.Status.ToString(),
-                x.Severity.ToString(),
-                x.Differences.TryGetValue("Position", out var p) ? p : "",
-                x.Differences.TryGetValue("Elevation", out var el) ? el : "",
-                x.Differences.TryGetValue("Width", out var w) ? w : "",
-                x.Differences.TryGetValue("Depth", out var d) ? d : "",
-                x.Differences.TryGetValue("Length", out var l) ? l : "",
-                x.Differences.TryGetValue("Rotation", out var r) ? r : "",
-                x.Confidence.ToString("0.##"),
-                x.Message
-            };
-            sb.AppendLine(string.Join(",", vals.Select(Csv)));
+            static string E(string? v) => (v ?? "").Replace("\"", "\"\"");
+            sb.AppendLine($"{E(x.ElementType)},{E(x.StoryOrLevel)},{E(x.RevitName)},{E(x.EtabsName)},{x.Status},{x.Severity},{x.PositionDeltaMm:0.###},{x.ElevationDeltaMm:0.###},{x.WidthDeltaMm:0.###},{x.DepthDeltaMm:0.###},{x.LengthDeltaMm:0.###},{x.RotationDeltaDegrees:0.###},{x.Confidence:0.0},{E(x.Message)}");
         }
 
         File.WriteAllText(dlg.FileName, sb.ToString(), Encoding.UTF8);
         SetStatus("CSV exported: " + dlg.FileName);
-    }
-
-    private static string Csv(string? value)
-    {
-        value ??= "";
-        return '"' + value.Replace("\"", "\"\"") + '"';
     }
 
     private void ExportJson_Click(object s, RoutedEventArgs e)
@@ -516,9 +482,7 @@ public partial class MainWindow : Window
         if (dlg.ShowDialog() != true)
             return;
 
-        File.WriteAllText(
-            dlg.FileName,
-            JsonSerializer.Serialize(_all, new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(dlg.FileName, JsonSerializer.Serialize(_all, new JsonSerializerOptions { WriteIndented = true }));
         SetStatus("JSON exported: " + dlg.FileName);
     }
 }
