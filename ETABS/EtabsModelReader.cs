@@ -6,9 +6,9 @@ namespace RevitEtabsValidator.ETABS;
 
 /// <summary>
 /// Reads ETABS 22 frame objects through the typed ETABSv1 OAPI.
-/// The connection layer supplies the typed cSapModel; this reader then calls
-/// FrameObj/PointObj/PropFrame/Story directly instead of reflection so that
-/// the COM ByRef signatures are handled exactly as defined by CSI.
+/// Frame objects whose ETABS object name starts with "0" are deliberately
+/// excluded because, in this project, those objects are line-load/helper
+/// objects and must not participate in the Revit-to-ETABS validation.
 /// </summary>
 public sealed class EtabsModelReader
 {
@@ -18,6 +18,8 @@ public sealed class EtabsModelReader
     {
         _sap = sap ?? throw new ArgumentNullException(nameof(sap));
     }
+
+    public int ExcludedZeroNameCount { get; private set; }
 
     public List<ColumnElement> ReadColumns() => ReadFrames<ColumnElement>(eFrameDesignOrientation.Column);
 
@@ -41,6 +43,14 @@ public sealed class EtabsModelReader
         {
             if (string.IsNullOrWhiteSpace(name))
                 continue;
+
+            // Project rule: ETABS frame names starting with "0" are helper /
+            // line-load objects and are excluded from Revit-vs-ETABS validation.
+            if (name.StartsWith("0", StringComparison.Ordinal))
+            {
+                ExcludedZeroNameCount++;
+                continue;
+            }
 
             try
             {
@@ -73,7 +83,7 @@ public sealed class EtabsModelReader
                 }
                 catch
                 {
-                    // Keep the frame name and empty story; we can infer story below.
+                    // Keep the frame name and empty story; infer story below.
                 }
 
                 if (string.IsNullOrWhiteSpace(story))
@@ -188,8 +198,6 @@ public sealed class EtabsModelReader
 
             if (rc == 0)
             {
-                // ETABS rectangle definition: T3 and T2 are the two section dimensions.
-                // The comparer treats Width/Depth as the two reported section dimensions.
                 return (t2, t3);
             }
         }
