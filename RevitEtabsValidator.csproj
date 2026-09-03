@@ -10,11 +10,6 @@
     <PlatformTarget>x64</PlatformTarget>
     <LangVersion>latest</LangVersion>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
-    <!-- Moved from the now-removed Properties/AssemblyInfo.cs, which wasn't
-         even included in the build (the Compile glob below only covers
-         Core/ETABS/Revit) and would throw CS0579 duplicate-attribute errors
-         if someone ever did include it, since GenerateAssemblyInfo already
-         emits these same attributes from these properties. -->
     <AssemblyTitle>Revit 2025 ↔ ETABS Structural Model Validator</AssemblyTitle>
     <Description>Structural model coordination validator for Revit 2025 and ETABS</Description>
     <Company>Structural Automation</Company>
@@ -24,9 +19,13 @@
     <StartAction>Program</StartAction>
     <StartProgram>$(RevitInstallPath)\Revit.exe</StartProgram>
   </PropertyGroup>
+
   <PropertyGroup>
     <RevitInstallPath Condition="'$(RevitInstallPath)'==''">$(ProgramFiles)\Autodesk\Revit 2025</RevitInstallPath>
+    <EtabsInstallPath Condition="Exists('$(ProgramFiles)\Computers and Structures\ETABS 22')">$(ProgramFiles)\Computers and Structures\ETABS 22</EtabsInstallPath>
+    <EtabsInstallPath Condition="'$(EtabsInstallPath)'=='' And Exists('$(ProgramFiles(x86))\Computers and Structures\ETABS 22')">$(ProgramFiles(x86))\Computers and Structures\ETABS 22</EtabsInstallPath>
   </PropertyGroup>
+
   <ItemGroup>
     <Reference Include="RevitAPI">
       <HintPath>$(RevitInstallPath)\RevitAPI.dll</HintPath>
@@ -36,7 +35,12 @@
       <HintPath>$(RevitInstallPath)\RevitAPIUI.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="ETABSv1">
+      <HintPath>$(EtabsInstallPath)\ETABSv1.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
+
   <ItemGroup>
     <Compile Include="Core\**\*.cs" />
     <Compile Include="ETABS\**\*.cs" />
