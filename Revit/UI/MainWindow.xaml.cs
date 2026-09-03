@@ -170,8 +170,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Always refresh Revit data before comparing. ExternalEvent is asynchronous,
-        // therefore ContinueValidation() is called only from OnRevitReadCompleted().
         _validationPending = true;
         _all.Clear();
         _visible.Clear();
@@ -197,6 +195,26 @@ public partial class MainWindow : Window
                 return;
             }
 
+            // ETABS can contain non-structural/auxiliary analysis frames whose
+            // internal frame names start with "0". They are intentionally excluded
+            // from validation and from the validation counts/results.
+            var originalEtabsColumnCount = _etabsColumns.Count;
+            var originalEtabsBeamCount = _etabsBeams.Count;
+
+            _etabsColumns = _etabsColumns
+                .Where(IsIncludedEtabsFrame)
+                .ToList();
+
+            _etabsBeams = _etabsBeams
+                .Where(IsIncludedEtabsFrame)
+                .ToList();
+
+            var excludedColumns = originalEtabsColumnCount - _etabsColumns.Count;
+            var excludedBeams = originalEtabsBeamCount - _etabsBeams.Count;
+
+            EtabsColCount.Text = _etabsColumns.Count.ToString();
+            EtabsBeamCount.Text = _etabsBeams.Count.ToString();
+
             var t = Tol();
             var cmp = new ModelComparer();
             _columnReport = cmp.CompareColumns(_revitColumns, _etabsColumns, t);
@@ -212,12 +230,21 @@ public partial class MainWindow : Window
             RefreshVisible();
             UpdateSummary();
             PopulateFloors();
-            SetStatus($"Validation complete: {_all.Count} comparison results.");
+
+            SetStatus(
+                $"Validation complete: {_all.Count} comparison results. " +
+                $"Excluded ETABS frames starting with 0: {excludedColumns} columns, {excludedBeams} beams.");
         }
         catch (Exception ex)
         {
             SetStatus("Validation failed: " + ex);
         }
+    }
+
+    private static bool IsIncludedEtabsFrame(ElementBase element)
+    {
+        // The rule applies to the ETABS internal frame name/ID, not the Revit element ID.
+        return !string.IsNullOrWhiteSpace(element.Id) && !element.Id.StartsWith("0", StringComparison.Ordinal);
     }
 
     private void UpdateSummary()
@@ -443,30 +470,35 @@ public partial class MainWindow : Window
         sb.AppendLine("Type,Level,Revit,ETABS,Status,Severity,Pos_mm,Elev_mm,Width_mm,Depth_mm,Length_mm,Rotation_deg,Confidence,Message");
         foreach (var x in _all)
         {
-            sb.AppendLine(string.Join(",", new[]
+            var vals = new[]
             {
-                Escape(x.ElementType),
-                Escape(x.StoryOrLevel),
-                Escape(x.RevitName),
-                Escape(x.EtabsName),
-                Escape(x.Status.ToString()),
-                Escape(x.Severity.ToString()),
-                x.PositionDeltaMm.ToString("F1"),
-                x.ElevationDeltaMm.ToString("F1"),
-                x.WidthDeltaMm.ToString("F1"),
-                x.DepthDeltaMm.ToString("F1"),
-                x.LengthDeltaMm.ToString("F1"),
-                x.RotationDeltaDeg.ToString("F1"),
-                x.Confidence.ToString("F0"),
-                Escape(x.Message)
-            }));
+                x.ElementType,
+                x.StoryOrLevel,
+                x.RevitName,
+                x.EtabsName,
+                x.Status.ToString(),
+                x.Severity.ToString(),
+                x.Differences.TryGetValue("Position", out var p) ? p : "",
+                x.Differences.TryGetValue("Elevation", out var el) ? el : "",
+                x.Differences.TryGetValue("Width", out var w) ? w : "",
+                x.Differences.TryGetValue("Depth", out var d) ? d : "",
+                x.Differences.TryGetValue("Length", out var l) ? l : "",
+                x.Differences.TryGetValue("Rotation", out var r) ? r : "",
+                x.Confidence.ToString("0.##"),
+                x.Message
+            };
+            sb.AppendLine(string.Join(",", vals.Select(Csv)));
         }
 
         File.WriteAllText(dlg.FileName, sb.ToString(), Encoding.UTF8);
         SetStatus("CSV exported: " + dlg.FileName);
     }
 
-    private static string Escape(string? s) => "\"" + (s ?? "").Replace("\"", "\"\"") + "\"";
+    private static string Csv(string? value)
+    {
+        value ??= "";
+        return '"' + value.Replace("\"", "\"\"") + '"';
+    }
 
     private void ExportJson_Click(object s, RoutedEventArgs e)
     {
@@ -484,7 +516,9 @@ public partial class MainWindow : Window
         if (dlg.ShowDialog() != true)
             return;
 
-        File.WriteAllText(dlg.FileName, JsonSerializer.Serialize(_all, new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(
+            dlg.FileName,
+            JsonSerializer.Serialize(_all, new JsonSerializerOptions { WriteIndented = true }));
         SetStatus("JSON exported: " + dlg.FileName);
     }
 }
