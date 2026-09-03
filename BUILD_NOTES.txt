@@ -1,0 +1,18 @@
+BUILD STATUS
+===========
+The source package is complete, but this environment does not contain the Windows .NET SDK and Autodesk Revit reference assemblies, so a real Revit-host build could not be executed here.
+
+Expected build environment:
+- Windows 10/11 x64
+- Visual Studio 2022 17.8+ / .NET 8 SDK
+- Autodesk Revit 2025 installed
+- ETABS installed for runtime testing
+
+The csproj automatically looks for:
+C:\Program Files\Autodesk\Revit 2025\RevitAPI.dll
+C:\Program Files\Autodesk\Revit 2025\RevitAPIUI.dll
+
+Build command:
+dotnet build .\RevitEtabsValidator.csproj -c Release
+
+The package uses ETABS COM late-binding, so there is intentionally no ETABS API DLL in the project references.

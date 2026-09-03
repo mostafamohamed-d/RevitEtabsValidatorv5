@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>Revit ↔ ETABS Structural Model Validator</Name>
+    <Assembly>__ASSEMBLY_PATH__</Assembly>
+    <AddInId>8D3F9B8A-FA8C-4C4A-9A1D-0B1D5D8F6E73</AddInId>
+    <FullClassName>RevitEtabsValidator.App</FullClassName>
+    <VendorId>STRUCT-AUTO</VendorId>
+    <VendorDescription>Structural model coordination validator</VendorDescription>
+  </AddIn>
+</RevitAddIns>
