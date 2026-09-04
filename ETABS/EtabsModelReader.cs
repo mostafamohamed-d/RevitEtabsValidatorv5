@@ -9,8 +9,7 @@ namespace RevitEtabsValidator.ETABS;
 /// Reads ETABS frame objects through the typed ETABSv1 OAPI.
 /// ETABS geometry is read from the Global coordinate system in the current
 /// present length units (the connection sets kN-mm-C before reading).
-/// The project coordination contract is:
-/// Revit Internal Origin ↔ ETABS Global origin/axes.
+/// The project coordination contract is Revit Internal Origin ↔ ETABS Global.
 /// No automatic XY translation is applied.
 /// Frame objects whose ETABS object name starts with "0" are excluded because,
 /// in this project, those objects are line-load/helper objects and must not
@@ -129,7 +128,7 @@ public sealed class EtabsModelReader
                         SectionName = sectionName,
                         LevelName = story,
                         Source = SourceApplication.Etabs,
-                        CoordinateReference = CoordinateReference.EtabsGlobal,
+                        CoordinateBasis = CoordinateReference.EtabsGlobal,
                         StartPoint = start,
                         EndPoint = end,
                         BaseElevation = Math.Min(start.Z, end.Z),
@@ -148,7 +147,7 @@ public sealed class EtabsModelReader
                         SectionName = sectionName,
                         LevelName = story,
                         Source = SourceApplication.Etabs,
-                        CoordinateReference = CoordinateReference.EtabsGlobal,
+                        CoordinateBasis = CoordinateReference.EtabsGlobal,
                         StartPoint = start,
                         EndPoint = end,
                         Width = width,
