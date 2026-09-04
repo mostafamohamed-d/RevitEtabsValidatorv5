@@ -60,7 +60,7 @@ public sealed class RevitElementReader
                 SectionName = e.Symbol?.Name ?? "",
                 LevelName = level?.Name ?? RevitLevelService.Nearest(_doc, RevitUnit.MmToFt((a.Z + b.Z) / 2))?.Name ?? "",
                 Source = SourceApplication.Revit,
-                CoordinateReference = CoordinateReference.RevitInternalOrigin,
+                CoordinateBasis = CoordinateReference.RevitInternalOrigin,
                 StartPoint = a,
                 EndPoint = b,
                 BaseElevation = Math.Min(a.Z, b.Z),
@@ -102,7 +102,7 @@ public sealed class RevitElementReader
                 SectionName = e.Symbol?.Name ?? "",
                 LevelName = level?.Name ?? "",
                 Source = SourceApplication.Revit,
-                CoordinateReference = CoordinateReference.RevitInternalOrigin,
+                CoordinateBasis = CoordinateReference.RevitInternalOrigin,
                 StartPoint = a,
                 EndPoint = b,
                 Width = sec.widthMm,
@@ -113,8 +113,8 @@ public sealed class RevitElementReader
         return list;
     }
 
-    // IMPORTANT: do not apply ProjectLocation.GetTransform(), Base Point, or
-    // Survey Point transforms here. The coordination contract is Revit Internal Origin.
+    // Do not apply ProjectLocation.GetTransform(), Base Point, or Survey Point
+    // transforms here. The coordination contract is Revit Internal Origin.
     private Point3D ToPoint(XYZ p) => new(RevitUnit.Mm(p.X), RevitUnit.Mm(p.Y), RevitUnit.Mm(p.Z));
 
     private static double TryTopElevation(FamilyInstance e, double baseZ)
