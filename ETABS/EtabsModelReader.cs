@@ -1,14 +1,20 @@
 using ETABSv1;
+using RevitEtabsValidator.Core.Comparison;
 using RevitEtabsValidator.Core.Geometry;
 using RevitEtabsValidator.Core.Models;
 
 namespace RevitEtabsValidator.ETABS;
 
 /// <summary>
-/// Reads ETABS 22 frame objects through the typed ETABSv1 OAPI.
-/// Frame objects whose ETABS object name starts with "0" are deliberately
-/// excluded because, in this project, those objects are line-load/helper
-/// objects and must not participate in the Revit-to-ETABS validation.
+/// Reads ETABS frame objects through the typed ETABSv1 OAPI.
+/// ETABS geometry is read from the Global coordinate system in the current
+/// present length units (the connection sets kN-mm-C before reading).
+/// The project coordination contract is:
+/// Revit Internal Origin ↔ ETABS Global origin/axes.
+/// No automatic XY translation is applied.
+/// Frame objects whose ETABS object name starts with "0" are excluded because,
+/// in this project, those objects are line-load/helper objects and must not
+/// participate in Revit-to-ETABS structural-member validation.
 /// </summary>
 public sealed class EtabsModelReader
 {
@@ -44,8 +50,6 @@ public sealed class EtabsModelReader
             if (string.IsNullOrWhiteSpace(name))
                 continue;
 
-            // Project rule: ETABS frame names starting with "0" are helper /
-            // line-load objects and are excluded from Revit-vs-ETABS validation.
             if (name.StartsWith("0", StringComparison.Ordinal))
             {
                 ExcludedZeroNameCount++;
@@ -83,7 +87,7 @@ public sealed class EtabsModelReader
                 }
                 catch
                 {
-                    // Keep the frame name and empty story; infer story below.
+                    // Keep the frame name and infer story below if possible.
                 }
 
                 if (string.IsNullOrWhiteSpace(story))
@@ -125,6 +129,7 @@ public sealed class EtabsModelReader
                         SectionName = sectionName,
                         LevelName = story,
                         Source = SourceApplication.Etabs,
+                        CoordinateReference = CoordinateReference.EtabsGlobal,
                         StartPoint = start,
                         EndPoint = end,
                         BaseElevation = Math.Min(start.Z, end.Z),
@@ -143,6 +148,7 @@ public sealed class EtabsModelReader
                         SectionName = sectionName,
                         LevelName = story,
                         Source = SourceApplication.Etabs,
+                        CoordinateReference = CoordinateReference.EtabsGlobal,
                         StartPoint = start,
                         EndPoint = end,
                         Width = width,
@@ -164,6 +170,9 @@ public sealed class EtabsModelReader
         double x = 0.0;
         double y = 0.0;
         double z = 0.0;
+
+        // Explicit ETABS Global frame. Revit is coordinated against these values
+        // because the project's DXF/reference workflow uses Revit Internal Origin.
         int rc = _sap.PointObj.GetCoordCartesian(pointName, ref x, ref y, ref z, "Global");
         if (rc != 0)
             throw new InvalidOperationException($"PointObj.GetCoordCartesian failed for '{pointName}' with return code {rc}.");
@@ -197,9 +206,7 @@ public sealed class EtabsModelReader
                 ref guid);
 
             if (rc == 0)
-            {
                 return (t2, t3);
-            }
         }
         catch
         {
@@ -233,7 +240,7 @@ public sealed class EtabsModelReader
         }
         catch
         {
-            // Story information is supplemental; frame labels can still provide the story.
+            // Story information is supplemental.
         }
 
         return result;
