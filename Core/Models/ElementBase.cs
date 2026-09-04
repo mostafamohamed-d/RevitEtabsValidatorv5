@@ -12,9 +12,8 @@ public abstract class ElementBase
     public SourceApplication Source { get; set; }
     public string MaterialName { get; set; } = "";
 
-    // Coordinate contract is explicit so the comparison engine cannot silently
-    // mix project/shared-coordinate assumptions with the DXF/internal-origin workflow.
-    public CoordinateReference CoordinateReference { get; set; } = CoordinateReference.Unknown;
+    // Explicit coordinate contract for the DXF/internal-origin workflow.
+    public CoordinateReference CoordinateBasis { get; set; } = CoordinateReference.Unknown;
 
     public Point3D StartPoint { get; set; }
     public Point3D EndPoint { get; set; }
