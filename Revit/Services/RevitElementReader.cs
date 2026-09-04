@@ -53,6 +53,10 @@ public sealed class RevitElementReader
 
             var sec = SectionDimensionService.Get(_doc, e);
 
+            // Column section convention for Revit ↔ ETABS:
+            // Revit b = ETABS Depth, Revit h = ETABS Width.
+            // SectionDimensionService returns the Revit b-like value first and
+            // h-like value second, so swap them into the common model fields.
             list.Add(new ColumnElement
             {
                 Id = e.Id.Value.ToString(),
@@ -65,8 +69,8 @@ public sealed class RevitElementReader
                 EndPoint = b,
                 BaseElevation = Math.Min(a.Z, b.Z),
                 TopElevation = Math.Max(a.Z, b.Z),
-                Width = sec.widthMm,
-                Depth = sec.depthMm,
+                Width = sec.depthMm,
+                Depth = sec.widthMm,
                 Rotation = rot,
                 BoundingBox = new BoundingBox3D(
                     new Point3D(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Min(a.Z, b.Z)),
@@ -113,8 +117,6 @@ public sealed class RevitElementReader
         return list;
     }
 
-    // Do not apply ProjectLocation.GetTransform(), Base Point, or Survey Point
-    // transforms here. The coordination contract is Revit Internal Origin.
     private Point3D ToPoint(XYZ p) => new(RevitUnit.Mm(p.X), RevitUnit.Mm(p.Y), RevitUnit.Mm(p.Z));
 
     private static double TryTopElevation(FamilyInstance e, double baseZ)
