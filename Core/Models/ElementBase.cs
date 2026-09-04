@@ -1,4 +1,6 @@
+using RevitEtabsValidator.Core.Comparison;
 using RevitEtabsValidator.Core.Geometry;
+
 namespace RevitEtabsValidator.Core.Models;
 
 public abstract class ElementBase
@@ -9,6 +11,11 @@ public abstract class ElementBase
     public string LevelName { get; set; } = "";
     public SourceApplication Source { get; set; }
     public string MaterialName { get; set; } = "";
+
+    // Coordinate contract is explicit so the comparison engine cannot silently
+    // mix project/shared-coordinate assumptions with the DXF/internal-origin workflow.
+    public CoordinateReference CoordinateReference { get; set; } = CoordinateReference.Unknown;
+
     public Point3D StartPoint { get; set; }
     public Point3D EndPoint { get; set; }
     public Point3D CenterPoint => new((StartPoint.X + EndPoint.X) / 2.0, (StartPoint.Y + EndPoint.Y) / 2.0, (StartPoint.Z + EndPoint.Z) / 2.0);
