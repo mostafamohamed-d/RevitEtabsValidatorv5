@@ -19,8 +19,13 @@ internal static class EtabsAssemblyResolver
     private const string AssemblySimpleName = "ETABSv1";
     private static bool _installed;
 
+    // This module initializer is intentional: ETABSv1 is an optional host-side
+    // dependency that may not be beside the validator DLL when Add-in Manager loads it.
+    // Register the resolver as early as possible so the CLR can locate ETABSv1.dll.
+#pragma warning disable CA2255
     [ModuleInitializer]
     internal static void Initialize()
+#pragma warning restore CA2255
     {
         if (_installed)
             return;
