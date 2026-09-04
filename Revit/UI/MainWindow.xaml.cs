@@ -127,7 +127,8 @@ public partial class MainWindow : Window
     {
         try
         {
-            if (!_etabs.IsConnected)
+            var sapModel = _etabs.SapModel;
+            if (sapModel == null)
             {
                 SetStatus("ETABS is not connected.");
                 return;
@@ -136,7 +137,7 @@ public partial class MainWindow : Window
             if (!_etabs.SetUnitsKnMmC())
                 SetStatus("Warning: ETABS units were not confirmed as kN-mm-C.");
 
-            var reader = new EtabsModelReader(_etabs.SapModel);
+            var reader = new EtabsModelReader(sapModel);
             var columns = reader.ReadColumns();
             var beams = reader.ReadBeams();
 
@@ -440,49 +441,42 @@ public partial class MainWindow : Window
 
     private void ExportCsv_Click(object s, RoutedEventArgs e)
     {
-        if (_all.Count == 0)
+        try
         {
-            SetStatus("Run validation first.");
-            return;
+            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "RevitEtabsValidation.csv");
+            var sb = new StringBuilder();
+            sb.AppendLine("Type,Level,Revit,RevitId,ETABS,ETABSId,Status,Severity,PositionMm,ElevationMm,WidthMm,DepthMm,LengthMm,RotationDeg,Confidence,Message");
+            foreach (var r in _all)
+            {
+                string Q(string? value) => $"\"{(value ?? string.Empty).Replace("\"", "\"\"")}\"";
+                sb.AppendLine(string.Join(",", Q(r.ElementType), Q(r.StoryOrLevel), Q(r.RevitName), Q(r.RevitElementId), Q(r.EtabsName), Q(r.EtabsElementId), Q(r.Status.ToString()), Q(r.Severity.ToString()), r.PositionDeltaMm.ToString("F1"), r.ElevationDeltaMm.ToString("F1"), r.WidthDeltaMm.ToString("F1"), r.DepthDeltaMm.ToString("F1"), r.LengthDeltaMm.ToString("F1"), r.RotationDeltaDeg.ToString("F1"), r.Confidence.ToString("F1"), Q(r.Message)));
+            }
+
+            File.WriteAllText(path, sb.ToString(), Encoding.UTF8);
+            SetStatus("CSV exported: " + path);
         }
-
-        var dlg = new Microsoft.Win32.SaveFileDialog
+        catch (Exception ex)
         {
-            Filter = "CSV (*.csv)|*.csv",
-            FileName = "Revit_ETABS_Validation.csv"
-        };
-        if (dlg.ShowDialog() != true)
-            return;
-
-        var sb = new StringBuilder();
-        sb.AppendLine("Type,Level,Revit,ETABS,Status,Severity,Pos_mm,Elev_mm,Width_mm,Depth_mm,Length_mm,Rotation_deg,Confidence,Message");
-        foreach (var x in _all)
-        {
-            static string E(string? v) => (v ?? "").Replace("\"", "\"\"");
-            sb.AppendLine($"{E(x.ElementType)},{E(x.StoryOrLevel)},{E(x.RevitName)},{E(x.EtabsName)},{x.Status},{x.Severity},{x.PositionDeltaMm:0.###},{x.ElevationDeltaMm:0.###},{x.WidthDeltaMm:0.###},{x.DepthDeltaMm:0.###},{x.LengthDeltaMm:0.###},{x.RotationDeltaDeg:0.###},{x.Confidence:0.0},{E(x.Message)}");
+            SetStatus("CSV export failed: " + ex.Message);
         }
-
-        File.WriteAllText(dlg.FileName, sb.ToString(), Encoding.UTF8);
-        SetStatus("CSV exported: " + dlg.FileName);
     }
 
     private void ExportJson_Click(object s, RoutedEventArgs e)
     {
-        if (_all.Count == 0)
+        try
         {
-            SetStatus("Run validation first.");
-            return;
+            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "RevitEtabsValidation.json");
+            File.WriteAllText(path, JsonSerializer.Serialize(_all, new JsonSerializerOptions { WriteIndented = true }));
+            SetStatus("JSON exported: " + path);
         }
-
-        var dlg = new Microsoft.Win32.SaveFileDialog
+        catch (Exception ex)
         {
-            Filter = "JSON (*.json)|*.json",
-            FileName = "Revit_ETABS_Validation.json"
-        };
-        if (dlg.ShowDialog() != true)
-            return;
+            SetStatus("JSON export failed: " + ex.Message);
+        }
+    }
 
-        File.WriteAllText(dlg.FileName, JsonSerializer.Serialize(_all, new JsonSerializerOptions { WriteIndented = true }));
-        SetStatus("JSON exported: " + dlg.FileName);
+    private void Rerun_Click(object s, RoutedEventArgs e)
+    {
+        RunValidation_Click(s, e);
     }
 }
