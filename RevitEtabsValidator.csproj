@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFrameworks>net48;net8.0-windows</TargetFrameworks>
     <UseWPF>true</UseWPF>
     <Platforms>AnyCPU</Platforms>
     <Nullable>enable</Nullable>
@@ -10,20 +10,36 @@
     <PlatformTarget>x64</PlatformTarget>
     <LangVersion>latest</LangVersion>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
-    <AssemblyTitle>Revit 2025 ↔ ETABS Structural Model Validator</AssemblyTitle>
-    <Description>Structural model coordination validator for Revit 2025 and ETABS</Description>
+    <AssemblyTitle>Revit ↔ ETABS Structural Model Validator</AssemblyTitle>
+    <Description>Structural model coordination validator for Revit 2024/2025 and ETABS 21/22</Description>
     <Company>Structural Automation</Company>
     <Product>RevitEtabsValidator</Product>
     <Version>1.0.0.0</Version>
-    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <StartAction>Program</StartAction>
-    <StartProgram>$(RevitInstallPath)\Revit.exe</StartProgram>
   </PropertyGroup>
 
-  <PropertyGroup>
+  <!-- Revit 2024 runs on .NET Framework 4.8 and is paired here with ETABS 21. -->
+  <PropertyGroup Condition="'$(TargetFramework)'=='net48'">
+    <RevitVersion Condition="'$(RevitVersion)'==''">2024</RevitVersion>
+    <EtabsVersion Condition="'$(EtabsVersion)'==''">21</EtabsVersion>
+    <RevitInstallPath Condition="'$(RevitInstallPath)'==''">$(ProgramFiles)\Autodesk\Revit 2024</RevitInstallPath>
+    <EtabsInstallPath Condition="Exists('$(ProgramFiles)\Computers and Structures\ETABS 21')">$(ProgramFiles)\Computers and Structures\ETABS 21</EtabsInstallPath>
+    <EtabsInstallPath Condition="'$(EtabsInstallPath)'=='' And Exists('$(ProgramFiles(x86))\Computers and Structures\ETABS 21')">$(ProgramFiles(x86))\Computers and Structures\ETABS 21</EtabsInstallPath>
+    <StartProgram>$(RevitInstallPath)\Revit.exe</StartProgram>
+    <AssemblyTitle>Revit 2024 ↔ ETABS 21 Structural Model Validator</AssemblyTitle>
+    <DefineConstants>$(DefineConstants);REVIT2024;ETABS21</DefineConstants>
+  </PropertyGroup>
+
+  <!-- Revit 2025 runs on .NET 8 and is paired here with ETABS 22. -->
+  <PropertyGroup Condition="'$(TargetFramework)'=='net8.0-windows'">
+    <RevitVersion Condition="'$(RevitVersion)'==''">2025</RevitVersion>
+    <EtabsVersion Condition="'$(EtabsVersion)'==''">22</EtabsVersion>
     <RevitInstallPath Condition="'$(RevitInstallPath)'==''">$(ProgramFiles)\Autodesk\Revit 2025</RevitInstallPath>
     <EtabsInstallPath Condition="Exists('$(ProgramFiles)\Computers and Structures\ETABS 22')">$(ProgramFiles)\Computers and Structures\ETABS 22</EtabsInstallPath>
     <EtabsInstallPath Condition="'$(EtabsInstallPath)'=='' And Exists('$(ProgramFiles(x86))\Computers and Structures\ETABS 22')">$(ProgramFiles(x86))\Computers and Structures\ETABS 22</EtabsInstallPath>
+    <StartProgram>$(RevitInstallPath)\Revit.exe</StartProgram>
+    <AssemblyTitle>Revit 2025 ↔ ETABS 22 Structural Model Validator</AssemblyTitle>
+    <DefineConstants>$(DefineConstants);REVIT2025;ETABS22</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
@@ -39,6 +55,12 @@
       <HintPath>$(EtabsInstallPath)\ETABSv1.dll</HintPath>
       <Private>true</Private>
     </Reference>
+  </ItemGroup>
+
+  <!-- System.Text.Json is available in the .NET 8 shared framework. Revit 2024 needs
+       the NuGet implementation because it runs on .NET Framework 4.8. -->
+  <ItemGroup Condition="'$(TargetFramework)'=='net48'">
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
   </ItemGroup>
 
   <ItemGroup>
