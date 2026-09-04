@@ -63,6 +63,7 @@ internal static class EtabsAssemblyResolver
     private static IEnumerable<string> CandidatePaths()
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var yieldTargets = new List<string>();
 
         void Add(string? path)
         {
@@ -71,16 +72,15 @@ internal static class EtabsAssemblyResolver
 
             try
             {
-                if (seen.Add(Path.GetFullPath(path)))
-                    yieldTargets.Add(Path.GetFullPath(path));
+                var fullPath = Path.GetFullPath(path);
+                if (seen.Add(fullPath))
+                    yieldTargets.Add(fullPath);
             }
             catch
             {
                 // Ignore malformed paths and continue.
             }
         }
-
-        var yieldTargets = new List<string>();
 
         Add(Path.Combine(AppContext.BaseDirectory, "ETABSv1.dll"));
         Add(Path.Combine(Environment.CurrentDirectory, "ETABSv1.dll"));
