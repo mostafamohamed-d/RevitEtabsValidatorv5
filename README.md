@@ -1,52 +1,106 @@
-# Revit 2025 ↔ ETABS Structural Model Validator
+# Revit ↔ ETABS Structural Model Validator
 
-A C# / .NET 8 Revit 2025 add-in that compares reinforced-concrete frame members between the active Revit model and an open/started ETABS model.
+A shared C# codebase for a Revit add-in that compares structural framing between Revit and ETABS.
+
+## Supported host combinations
+
+- **Revit 2024 + ETABS 21** → `.NET Framework 4.8` / `net48`
+- **Revit 2025 + ETABS 22** → `.NET 8` / `net8.0-windows`
+
+The same coordination engine is shared between both targets. The project references the Revit API and ETABSv1 API from the installation selected by the target framework.
 
 ## Implemented
-- Revit 2025 ExternalApplication + ExternalCommand
+
+- Revit ExternalApplication + ExternalCommand
 - Modeless WPF UI driven by Revit ExternalEvent
-- ETABS COM connection without requiring an ETABS API DLL reference
+- Typed ETABSv1 connection and model reader
 - Columns and beams
-- Coordinate-based level correspondence via elevation (does not require Revit level names and ETABS story names to match as text)
-- One-to-one deterministic element matching with distance/geometry scoring
+- Geometry-first one-to-one correspondence
+- Beams treated as line segments using endpoint geometry with start/end reversal handling
+- Columns treated as plan points with base/top elevation
 - Plan position, elevation, length, width, depth and orientation checks
 - Configurable tolerances
+- ETABS frame-name exclusion rule for names beginning with `0`
 - Summary counts and detailed results grid
-- Floor-by-floor plan visualization in the WPF window
-- Select corresponding Revit element from the result row
-- CSV export
-- JSON export
-- Re-run and refresh
-- Diagnostic/logging file
-- Installer script that writes the Revit 2025 .addin manifest
+- Floor-by-floor plan visualization
+- Select corresponding Revit element from result rows
+- CSV and JSON export
+- Diagnostics and installer support
 
-## Important engineering boundary
-This is a coordination/validation tool. It does not perform structural design code checks. A PASS means the two extracted models agree within the configured coordination tolerances; it is not a statement of structural adequacy.
+## Engineering boundary
 
-## Build
-Revit 2025 uses .NET 8, so build with Visual Studio 2022 17.8+ / .NET 8 SDK. The project auto-references:
+This is a coordination/validation tool. It does not perform structural design-code checks. A matched result means the extracted Revit and ETABS geometry agree within the configured coordination tolerances; it is not a statement of structural adequacy.
+
+## Build in Visual Studio
+
+Open `RevitEtabsValidator.sln` in Visual Studio 2022.
+
+### Revit 2024 + ETABS 21
+
+Build the `net48` target. Default references:
+
+`C:\Program Files\Autodesk\Revit 2024\RevitAPI.dll`
+
+`C:\Program Files\Autodesk\Revit 2024\RevitAPIUI.dll`
+
+`C:\Program Files\Computers and Structures\ETABS 21\ETABSv1.dll`
+
+Output:
+
+`bin\Release\net48\RevitEtabsValidator.dll`
+
+`bin\Release\net48\ETABSv1.dll`
+
+### Revit 2025 + ETABS 22
+
+Build the `net8.0-windows` target. Default references:
+
 `C:\Program Files\Autodesk\Revit 2025\RevitAPI.dll`
+
 `C:\Program Files\Autodesk\Revit 2025\RevitAPIUI.dll`
 
-If Revit is installed elsewhere:
-`dotnet build -p:RevitInstallPath="D:\Autodesk\Revit 2025"`
+`C:\Program Files\Computers and Structures\ETABS 22\ETABSv1.dll`
 
-ETABS is accessed through COM at runtime. The tool first attempts to attach to a running ETABS instance and, when requested, can start ETABS through its COM ProgID.
+Output:
 
-## Install
-1. Build Release.
-2. Run `Installer\Install-RevitEtabsValidator.ps1` as the current Windows user.
-3. Restart Revit 2025.
-4. Use Add-Ins → Revit ↔ ETABS Validator.
+`bin\Release\net8.0-windows\RevitEtabsValidator.dll`
+
+`bin\Release\net8.0-windows\ETABSv1.dll`
+
+Paths can be overridden with MSBuild properties such as `RevitInstallPath` and `EtabsInstallPath`.
+
+## Installer
+
+The installer is target-aware:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\Installer\Install-RevitEtabsValidator.ps1 -Target Revit2024-ETABS21
+```
+
+or:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\Installer\Install-RevitEtabsValidator.ps1 -Target Revit2025-ETABS22
+```
+
+The script builds only the selected target, verifies the application entry point, and copies both `RevitEtabsValidator.dll` and the matching `ETABSv1.dll` beside the manifest in the correct Revit Addins directory.
+
+## Manual Add-in Manager use
+
+For Revit 2024, load the `net48` build and keep its matching `ETABSv1.dll` in the same directory.
+
+For Revit 2025, load the `net8.0-windows` build and keep its matching `ETABSv1.dll` in the same directory.
+
+Do not use the Revit 2025 DLL in Revit 2024 or the Revit 2024 DLL in Revit 2025.
 
 ## Default tolerances
+
 - Position: 25 mm
 - Elevation: 25 mm
 - Section dimensions: 5 mm
 - Angle: 1 degree
 - Length: 25 mm
 
-Adjust these based on your project BIM/modeling convention.
-
-## ETABS units
-The connector requests kN-mm-C before extracting geometry. CSI's API is display-unit based, so explicit unit selection is important.
+The comparison logic also supports separate beam/column Z offsets where the project coordinate convention requires them.
