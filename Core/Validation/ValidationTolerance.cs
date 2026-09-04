@@ -11,4 +11,10 @@ public sealed class ValidationTolerance
     // Matching-score gap below this value is treated as an ambiguous match.
     // Matching scores are normalized and therefore dimensionless.
     public double AmbiguousScoreGap { get; set; } = 0.25;
+
+    // Systematic Z correction applied to Revit elevations before comparing to ETABS.
+    // This is separate from ElevationToleranceMm: a tolerance absorbs local noise,
+    // while an offset represents a known common reference difference.
+    public double BeamZOffsetMm { get; set; } = 0;
+    public double ColumnZOffsetMm { get; set; } = 0;
 }
