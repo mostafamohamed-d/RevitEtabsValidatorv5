@@ -21,10 +21,7 @@ namespace RevitEtabsValidator.Core.Comparison;
 /// </summary>
 public sealed class ModelComparer
 {
-    public ValidationReport CompareColumns(
-        IReadOnlyList<ColumnElement> revit,
-        IReadOnlyList<ColumnElement> etabs,
-        ValidationTolerance tol)
+    public ValidationReport CompareColumns(IReadOnlyList<ColumnElement> revit, IReadOnlyList<ColumnElement> etabs, ValidationTolerance tol)
     {
         var report = new ValidationReport();
         var remaining = new HashSet<string>(etabs.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
@@ -53,8 +50,7 @@ public sealed class ModelComparer
             }
 
             var best = candidates[0];
-            if (candidates.Count > 1 &&
-                Math.Abs(candidates[1].Score - best.Score) < Math.Max(0, tol.AmbiguousScoreGap))
+            if (candidates.Count > 1 && Math.Abs(candidates[1].Score - best.Score) < Math.Max(0, tol.AmbiguousScoreGap))
             {
                 report.Results.Add(new ValidationResult
                 {
@@ -82,10 +78,7 @@ public sealed class ModelComparer
         return report;
     }
 
-    public ValidationReport CompareBeams(
-        IReadOnlyList<BeamElement> revit,
-        IReadOnlyList<BeamElement> etabs,
-        ValidationTolerance tol)
+    public ValidationReport CompareBeams(IReadOnlyList<BeamElement> revit, IReadOnlyList<BeamElement> etabs, ValidationTolerance tol)
     {
         var report = new ValidationReport();
         var remaining = new HashSet<string>(etabs.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
@@ -114,8 +107,7 @@ public sealed class ModelComparer
             }
 
             var best = candidates[0];
-            if (candidates.Count > 1 &&
-                Math.Abs(candidates[1].Score - best.Score) < Math.Max(0, tol.AmbiguousScoreGap))
+            if (candidates.Count > 1 && Math.Abs(candidates[1].Score - best.Score) < Math.Max(0, tol.AmbiguousScoreGap))
             {
                 report.Results.Add(new ValidationResult
                 {
@@ -156,7 +148,7 @@ public sealed class ModelComparer
     {
         var g = Geometry(r, e, t);
         return g.LineOffset <= t.PositionToleranceMm &&
-               g.OverlapRatio >= Math.Clamp(t.BeamMinimumOverlapRatio, 0.0, 1.0) &&
+               g.OverlapRatio >= Clamp01(t.BeamMinimumOverlapRatio) &&
                g.AngleDelta <= t.AngleToleranceDegrees;
     }
 
@@ -168,7 +160,6 @@ public sealed class ModelComparer
         var z = (baseDelta + topDelta) / (2.0 * Safe(t.ElevationToleranceMm));
         var section = SectionPenalty(r.Width, r.Depth, e.Width, e.Depth, t.DimensionToleranceMm);
         var rot = AngleMath.CircularDeltaDegrees(r.Rotation, e.Rotation, 180) / Safe(t.AngleToleranceDegrees);
-
         return 8.0 * plan + 1.5 * z + 1.0 * section + 0.25 * rot;
     }
 
@@ -177,16 +168,12 @@ public sealed class ModelComparer
         var g = Geometry(r, e, t);
         var line = g.LineOffset / Safe(t.PositionToleranceMm);
         var midpoint = g.MidpointDeviation / Safe(t.PositionToleranceMm);
-        var overlap = (1.0 - g.OverlapRatio);
+        var overlap = 1.0 - g.OverlapRatio;
         var z = g.EndpointElevationDeviation / Safe(t.ElevationToleranceMm);
         var len = g.LengthDelta / Safe(t.LengthToleranceMm);
         var angle = g.AngleDelta / Safe(t.AngleToleranceDegrees);
         var section = SectionPenalty(r.Width, r.Depth, e.Width, e.Depth, t.DimensionToleranceMm);
-
-        // Plan-line geometry is primary. Overlap and midpoint distinguish nearby
-        // parallel members. Elevation/length/section are secondary evidence.
-        return 8.0 * line + 2.0 * midpoint + 3.0 * overlap +
-               1.5 * z + 1.5 * len + 0.75 * angle + 0.5 * section;
+        return 8.0 * line + 2.0 * midpoint + 3.0 * overlap + 1.5 * z + 1.5 * len + 0.75 * angle + 0.5 * section;
     }
 
     private readonly record struct BeamGeometryResult(
@@ -232,8 +219,6 @@ public sealed class ModelComparer
         var uex = edx / eLen;
         var uey = edy / eLen;
 
-        // Symmetric line-to-line offset: every endpoint of one segment is
-        // measured to the infinite centerline of the other segment.
         var lineOffset = Math.Max(
             Math.Max(PointToLineDistance(e0, r0, urx, ury), PointToLineDistance(e1, r0, urx, ury)),
             Math.Max(PointToLineDistance(r0, e0, uex, uey), PointToLineDistance(r1, e0, uex, uey)));
@@ -242,9 +227,7 @@ public sealed class ModelComparer
         var sameEndB = r1.PlanDistanceTo(e1);
         var reverseEndA = r0.PlanDistanceTo(e1);
         var reverseEndB = r1.PlanDistanceTo(e0);
-        var endpointPlanDeviation = Math.Min(
-            Math.Max(sameEndA, sameEndB),
-            Math.Max(reverseEndA, reverseEndB));
+        var endpointPlanDeviation = Math.Min(Math.Max(sameEndA, sameEndB), Math.Max(reverseEndA, reverseEndB));
 
         var midX = (r0.X + r1.X) / 2.0;
         var midY = (r0.Y + r1.Y) / 2.0;
@@ -252,19 +235,15 @@ public sealed class ModelComparer
         var eMidY = (e0.Y + e1.Y) / 2.0;
         var midpointDeviation = Math.Sqrt(Math.Pow(midX - eMidX, 2) + Math.Pow(midY - eMidY, 2));
 
-        // Project ETABS onto the Revit beam axis and calculate finite-segment overlap.
         var ep0 = (e0.X - r0.X) * urx + (e0.Y - r0.Y) * ury;
         var ep1 = (e1.X - r0.X) * urx + (e1.Y - r0.Y) * ury;
         var eMin = Math.Min(ep0, ep1);
         var eMax = Math.Max(ep0, ep1);
         var overlap = Math.Max(0.0, Math.Min(rLen, eMax) - Math.Max(0.0, eMin));
-        var overlapRatio = overlap / Math.Max(1e-9, Math.Min(rLen, eLen));
-        overlapRatio = Math.Clamp(overlapRatio, 0.0, 1.0);
+        var overlapRatio = Clamp01(overlap / Math.Max(1e-9, Math.Min(rLen, eLen)));
 
         var angleDelta = AngleMath.CircularDeltaDegrees(r.Rotation, e.Rotation, 180);
 
-        // Find the endpoint pairing that best represents the same orientation,
-        // then evaluate the corresponding Z deviations using that pairing.
         var samePlanMax = Math.Max(sameEndA, sameEndB);
         var reversePlanMax = Math.Max(reverseEndA, reverseEndB);
         var sameElevMax = Math.Max(
@@ -273,7 +252,6 @@ public sealed class ModelComparer
         var reverseElevMax = Math.Max(
             Math.Abs(r0.Z + t.BeamZOffsetMm - e1.Z),
             Math.Abs(r1.Z + t.BeamZOffsetMm - e0.Z));
-
         var endpointElevationDeviation = reversePlanMax < samePlanMax ? reverseElevMax : sameElevMax;
 
         return new BeamGeometryResult(
@@ -340,8 +318,7 @@ public sealed class ModelComparer
         var g = Geometry(r, e, t);
         var wd = Math.Abs(r.Width - e.Width);
         var dd = Math.Abs(r.Depth - e.Depth);
-        var okP = g.LineOffset <= t.PositionToleranceMm &&
-                  g.OverlapRatio >= Math.Clamp(t.BeamMinimumOverlapRatio, 0.0, 1.0);
+        var okP = g.LineOffset <= t.PositionToleranceMm && g.OverlapRatio >= Clamp01(t.BeamMinimumOverlapRatio);
         var okE = g.EndpointElevationDeviation <= t.ElevationToleranceMm;
         var okL = g.LengthDelta <= t.LengthToleranceMm;
         var okS = UnknownSection(r, e) || (wd <= t.DimensionToleranceMm && dd <= t.DimensionToleranceMm);
@@ -373,7 +350,7 @@ public sealed class ModelComparer
             g.AngleDelta / Safe(t.AngleToleranceDegrees)
         });
         result.Message = result.Status == ValidationStatus.Matched
-            ? "Beam correspondence confirmed by plan-line direction, line offset and finite-segment overlap; elevation, length and section are within tolerance."
+            ? $"Beam correspondence confirmed by plan-line direction, {g.LineOffset:F1} mm line offset and {g.OverlapRatio:P0} overlap; elevation, length and section are within tolerance."
             : $"{result.Status}: line offset {g.LineOffset:F1} mm; overlap {g.OverlapRatio:P0}; Δelev {g.EndpointElevationDeviation:F1} mm; ΔL {g.LengthDelta:F1} mm; Δsection {wd:F1}x{dd:F1} mm; Δrot {g.AngleDelta:F1}°.";
         AddDiffs(result);
         return result;
@@ -393,6 +370,8 @@ public sealed class ModelComparer
         => UnknownSection(r, e) ? 0.0 : Math.Max(dw, dd) / Safe(tolerance);
 
     private static double Safe(double value) => Math.Max(Math.Abs(value), 1e-9);
+
+    private static double Clamp01(double value) => value < 0.0 ? 0.0 : value > 1.0 ? 1.0 : value;
 
     private static ValidationResult MissingRevit(ElementBase r, string type) => new()
     {
