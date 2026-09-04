@@ -7,18 +7,17 @@ namespace RevitEtabsValidator.Core.Comparison;
 /// <summary>
 /// Geometry-first one-to-one correspondence engine.
 ///
-/// Columns are identified primarily by their XY plan point. Base/top Z is a
-/// validation property, not a hard identity gate, because the same column can
-/// exist at the same plan location while the two models use different floor
-/// elevations.
+/// Columns are point-like objects in plan. Their XY location establishes identity;
+/// base/top Z, section and rotation are validated after the counterpart is found.
 ///
-/// Beams are identified primarily by their two plan endpoints, allowing endpoint
-/// reversal. Elevation, length, direction and section are then validated.
+/// Beams are finite plan line segments. Their plan-line direction, perpendicular
+/// offset and segment overlap establish identity. Endpoint extension/retraction,
+/// elevation, length and section are validated after the counterpart is found.
 ///
-/// Coordinates are expected in millimetres. Revit is converted from internal
-/// feet to mm by the Revit reader, and ETABS is read after SetPresentUnits(kN-mm-C).
-/// For this project the ETABS Base and Revit model base represent the same datum,
-/// so the default Z offsets remain zero.
+/// Coordinates are expected in millimetres. Revit uses its Internal Origin basis and
+/// ETABS uses its Global basis, with the two models intentionally compared in the
+/// same project XY coordinate system. Revit is converted from internal feet to mm
+/// by the reader and ETABS is read after SetPresentUnits(kN-mm-C).
 /// </summary>
 public sealed class ModelComparer
 {
@@ -30,9 +29,6 @@ public sealed class ModelComparer
         var report = new ValidationReport();
         var remaining = new HashSet<string>(etabs.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
 
-        // Identity is plan position. Elevation is evaluated after a counterpart
-        // is identified, so a real elevation mismatch is reported as such instead
-        // of being incorrectly reported as MissingInEtabs/MissingInRevit.
         var pending = revit.Select(r =>
         {
             var candidates = etabs
@@ -94,8 +90,6 @@ public sealed class ModelComparer
         var report = new ValidationReport();
         var remaining = new HashSet<string>(etabs.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
 
-        // Identity is plan line geometry. Both endpoints must be close, but Z is
-        // deliberately not a hard candidate gate; it is a property we validate.
         var pending = revit.Select(r =>
         {
             var candidates = etabs
@@ -134,7 +128,7 @@ public sealed class ModelComparer
                     Status = ValidationStatus.AmbiguousMatch,
                     Severity = Severity.Error,
                     Confidence = 0,
-                    Message = "Ambiguous beam correspondence: two ETABS line candidates have nearly identical plan endpoint scores."
+                    Message = "Ambiguous beam correspondence: two ETABS line candidates have nearly identical plan-line scores."
                 });
                 continue;
             }
@@ -152,11 +146,17 @@ public sealed class ModelComparer
     private static bool ColumnIdentityGate(ColumnElement r, ColumnElement e, ValidationTolerance t)
         => r.CenterPoint.PlanDistanceTo(e.CenterPoint) <= t.PositionToleranceMm;
 
+    /// <summary>
+    /// Beam identity is the plan line, not the exact end coordinates.
+    /// Direction must agree, the two finite segments must overlap materially,
+    /// and the symmetric endpoint-to-opposite-line offset must be within the
+    /// position tolerance. Beam Z and exact length are deliberately validated later.
+    /// </summary>
     private static bool BeamIdentityGate(BeamElement r, BeamElement e, ValidationTolerance t)
     {
         var g = Geometry(r, e, t);
-        return g.EndpointPlanDeviation <= t.PositionToleranceMm &&
-               g.LengthDelta <= t.LengthToleranceMm &&
+        return g.LineOffset <= t.PositionToleranceMm &&
+               g.OverlapRatio >= Math.Clamp(t.BeamMinimumOverlapRatio, 0.0, 1.0) &&
                g.AngleDelta <= t.AngleToleranceDegrees;
     }
 
@@ -169,25 +169,30 @@ public sealed class ModelComparer
         var section = SectionPenalty(r.Width, r.Depth, e.Width, e.Depth, t.DimensionToleranceMm);
         var rot = AngleMath.CircularDeltaDegrees(r.Rotation, e.Rotation, 180) / Safe(t.AngleToleranceDegrees);
 
-        // Plan location is primary. Z/section/rotation are secondary evidence.
         return 8.0 * plan + 1.5 * z + 1.0 * section + 0.25 * rot;
     }
 
     private static double BeamScore(BeamElement r, BeamElement e, ValidationTolerance t)
     {
         var g = Geometry(r, e, t);
-        var endpoint = g.EndpointPlanDeviation / Safe(t.PositionToleranceMm);
+        var line = g.LineOffset / Safe(t.PositionToleranceMm);
+        var midpoint = g.MidpointDeviation / Safe(t.PositionToleranceMm);
+        var overlap = (1.0 - g.OverlapRatio);
         var z = g.EndpointElevationDeviation / Safe(t.ElevationToleranceMm);
         var len = g.LengthDelta / Safe(t.LengthToleranceMm);
         var angle = g.AngleDelta / Safe(t.AngleToleranceDegrees);
         var section = SectionPenalty(r.Width, r.Depth, e.Width, e.Depth, t.DimensionToleranceMm);
 
-        // Endpoints are primary. Elevation helps disambiguate stacked members but
-        // must not make a genuinely corresponding line look missing.
-        return 8.0 * endpoint + 1.5 * z + 2.0 * len + 0.75 * angle + 0.5 * section;
+        // Plan-line geometry is primary. Overlap and midpoint distinguish nearby
+        // parallel members. Elevation/length/section are secondary evidence.
+        return 8.0 * line + 2.0 * midpoint + 3.0 * overlap +
+               1.5 * z + 1.5 * len + 0.75 * angle + 0.5 * section;
     }
 
     private readonly record struct BeamGeometryResult(
+        double LineOffset,
+        double MidpointDeviation,
+        double OverlapRatio,
         double EndpointPlanDeviation,
         double EndpointElevationDeviation,
         double LengthDelta,
@@ -195,33 +200,97 @@ public sealed class ModelComparer
 
     private static BeamGeometryResult Geometry(BeamElement r, BeamElement e, ValidationTolerance t)
     {
-        var samePlanA = r.StartPoint.PlanDistanceTo(e.StartPoint);
-        var samePlanB = r.EndPoint.PlanDistanceTo(e.EndPoint);
-        var revPlanA = r.StartPoint.PlanDistanceTo(e.EndPoint);
-        var revPlanB = r.EndPoint.PlanDistanceTo(e.StartPoint);
+        var r0 = r.StartPoint;
+        var r1 = r.EndPoint;
+        var e0 = e.StartPoint;
+        var e1 = e.EndPoint;
 
-        var rz0 = r.StartPoint.Z + t.BeamZOffsetMm;
-        var rz1 = r.EndPoint.Z + t.BeamZOffsetMm;
-        var ez0 = e.StartPoint.Z;
-        var ez1 = e.EndPoint.Z;
+        var rdx = r1.X - r0.X;
+        var rdy = r1.Y - r0.Y;
+        var edx = e1.X - e0.X;
+        var edy = e1.Y - e0.Y;
+        var rLen = Math.Sqrt(rdx * rdx + rdy * rdy);
+        var eLen = Math.Sqrt(edx * edx + edy * edy);
 
-        var sameMax = Math.Max(samePlanA, samePlanB);
-        var reverseMax = Math.Max(revPlanA, revPlanB);
-
-        if (reverseMax < sameMax)
+        if (rLen <= 1e-9 || eLen <= 1e-9)
         {
+            var fallback = Math.Max(
+                Math.Max(r0.PlanDistanceTo(e0), r0.PlanDistanceTo(e1)),
+                Math.Max(r1.PlanDistanceTo(e0), r1.PlanDistanceTo(e1)));
             return new BeamGeometryResult(
-                reverseMax,
-                Math.Max(Math.Abs(rz0 - ez1), Math.Abs(rz1 - ez0)),
+                fallback,
+                r.CenterPoint.PlanDistanceTo(e.CenterPoint),
+                0.0,
+                fallback,
+                Math.Max(Math.Abs(r0.Z + t.BeamZOffsetMm - e0.Z), Math.Abs(r1.Z + t.BeamZOffsetMm - e1.Z)),
                 Math.Abs(r.LengthMm - e.LengthMm),
-                AngleMath.CircularDeltaDegrees(r.Rotation, e.Rotation, 180));
+                180.0);
         }
 
+        var urx = rdx / rLen;
+        var ury = rdy / rLen;
+        var uex = edx / eLen;
+        var uey = edy / eLen;
+
+        // Symmetric line-to-line offset: every endpoint of one segment is
+        // measured to the infinite centerline of the other segment.
+        var lineOffset = Math.Max(
+            Math.Max(PointToLineDistance(e0, r0, urx, ury), PointToLineDistance(e1, r0, urx, ury)),
+            Math.Max(PointToLineDistance(r0, e0, uex, uey), PointToLineDistance(r1, e0, uex, uey)));
+
+        var sameEndA = r0.PlanDistanceTo(e0);
+        var sameEndB = r1.PlanDistanceTo(e1);
+        var reverseEndA = r0.PlanDistanceTo(e1);
+        var reverseEndB = r1.PlanDistanceTo(e0);
+        var endpointPlanDeviation = Math.Min(
+            Math.Max(sameEndA, sameEndB),
+            Math.Max(reverseEndA, reverseEndB));
+
+        var midX = (r0.X + r1.X) / 2.0;
+        var midY = (r0.Y + r1.Y) / 2.0;
+        var eMidX = (e0.X + e1.X) / 2.0;
+        var eMidY = (e0.Y + e1.Y) / 2.0;
+        var midpointDeviation = Math.Sqrt(Math.Pow(midX - eMidX, 2) + Math.Pow(midY - eMidY, 2));
+
+        // Project ETABS onto the Revit beam axis and calculate finite-segment overlap.
+        var ep0 = (e0.X - r0.X) * urx + (e0.Y - r0.Y) * ury;
+        var ep1 = (e1.X - r0.X) * urx + (e1.Y - r0.Y) * ury;
+        var eMin = Math.Min(ep0, ep1);
+        var eMax = Math.Max(ep0, ep1);
+        var overlap = Math.Max(0.0, Math.Min(rLen, eMax) - Math.Max(0.0, eMin));
+        var overlapRatio = overlap / Math.Max(1e-9, Math.Min(rLen, eLen));
+        overlapRatio = Math.Clamp(overlapRatio, 0.0, 1.0);
+
+        var angleDelta = AngleMath.CircularDeltaDegrees(r.Rotation, e.Rotation, 180);
+
+        // Find the endpoint pairing that best represents the same orientation,
+        // then evaluate the corresponding Z deviations using that pairing.
+        var samePlanMax = Math.Max(sameEndA, sameEndB);
+        var reversePlanMax = Math.Max(reverseEndA, reverseEndB);
+        var sameElevMax = Math.Max(
+            Math.Abs(r0.Z + t.BeamZOffsetMm - e0.Z),
+            Math.Abs(r1.Z + t.BeamZOffsetMm - e1.Z));
+        var reverseElevMax = Math.Max(
+            Math.Abs(r0.Z + t.BeamZOffsetMm - e1.Z),
+            Math.Abs(r1.Z + t.BeamZOffsetMm - e0.Z));
+
+        var endpointElevationDeviation = reversePlanMax < samePlanMax ? reverseElevMax : sameElevMax;
+
         return new BeamGeometryResult(
-            sameMax,
-            Math.Max(Math.Abs(rz0 - ez0), Math.Abs(rz1 - ez1)),
+            lineOffset,
+            midpointDeviation,
+            overlapRatio,
+            endpointPlanDeviation,
+            endpointElevationDeviation,
             Math.Abs(r.LengthMm - e.LengthMm),
-            AngleMath.CircularDeltaDegrees(r.Rotation, e.Rotation, 180));
+            angleDelta);
+    }
+
+    private static double PointToLineDistance(Point3D p, Point3D origin, double ux, double uy)
+    {
+        var dx = p.X - origin.X;
+        var dy = p.Y - origin.Y;
+        return Math.Abs(dx * uy - dy * ux);
     }
 
     private static ValidationResult ColumnResult(ColumnElement r, ColumnElement e, ValidationTolerance t)
@@ -271,14 +340,15 @@ public sealed class ModelComparer
         var g = Geometry(r, e, t);
         var wd = Math.Abs(r.Width - e.Width);
         var dd = Math.Abs(r.Depth - e.Depth);
-        var okP = g.EndpointPlanDeviation <= t.PositionToleranceMm;
+        var okP = g.LineOffset <= t.PositionToleranceMm &&
+                  g.OverlapRatio >= Math.Clamp(t.BeamMinimumOverlapRatio, 0.0, 1.0);
         var okE = g.EndpointElevationDeviation <= t.ElevationToleranceMm;
         var okL = g.LengthDelta <= t.LengthToleranceMm;
         var okS = UnknownSection(r, e) || (wd <= t.DimensionToleranceMm && dd <= t.DimensionToleranceMm);
         var okR = g.AngleDelta <= t.AngleToleranceDegrees;
 
         var result = Base(r, e, "Beam");
-        result.PositionDeltaMm = g.EndpointPlanDeviation;
+        result.PositionDeltaMm = g.LineOffset;
         result.ElevationDeltaMm = g.EndpointElevationDeviation;
         result.WidthDeltaMm = wd;
         result.DepthDeltaMm = dd;
@@ -294,15 +364,17 @@ public sealed class ModelComparer
         result.Severity = result.Status == ValidationStatus.Matched ? Severity.Info : Severity.Warning;
         result.Confidence = Confidence(new[]
         {
-            g.EndpointPlanDeviation / Safe(t.PositionToleranceMm),
+            g.LineOffset / Safe(t.PositionToleranceMm),
+            g.MidpointDeviation / Safe(t.PositionToleranceMm),
+            1.0 - g.OverlapRatio,
             g.EndpointElevationDeviation / Safe(t.ElevationToleranceMm),
             g.LengthDelta / Safe(t.LengthToleranceMm),
             SectionRatio(wd, dd, r, e, t.DimensionToleranceMm),
             g.AngleDelta / Safe(t.AngleToleranceDegrees)
         });
         result.Message = result.Status == ValidationStatus.Matched
-            ? "Beam correspondence confirmed by both plan endpoints; elevation, length, direction and section are within tolerance."
-            : $"{result.Status}: endpoint Δ {g.EndpointPlanDeviation:F1} mm; Δelev {g.EndpointElevationDeviation:F1} mm; ΔL {g.LengthDelta:F1} mm; Δsection {wd:F1}x{dd:F1} mm; Δrot {g.AngleDelta:F1}°.";
+            ? "Beam correspondence confirmed by plan-line direction, line offset and finite-segment overlap; elevation, length and section are within tolerance."
+            : $"{result.Status}: line offset {g.LineOffset:F1} mm; overlap {g.OverlapRatio:P0}; Δelev {g.EndpointElevationDeviation:F1} mm; ΔL {g.LengthDelta:F1} mm; Δsection {wd:F1}x{dd:F1} mm; Δrot {g.AngleDelta:F1}°.";
         AddDiffs(result);
         return result;
     }
