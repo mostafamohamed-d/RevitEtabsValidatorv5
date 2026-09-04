@@ -459,7 +459,7 @@ public partial class MainWindow : Window
         foreach (var x in _all)
         {
             static string E(string? v) => (v ?? "").Replace("\"", "\"\"");
-            sb.AppendLine($"{E(x.ElementType)},{E(x.StoryOrLevel)},{E(x.RevitName)},{E(x.EtabsName)},{x.Status},{x.Severity},{x.PositionDeltaMm:0.###},{x.ElevationDeltaMm:0.###},{x.WidthDeltaMm:0.###},{x.DepthDeltaMm:0.###},{x.LengthDeltaMm:0.###},{x.RotationDeltaDegrees:0.###},{x.Confidence:0.0},{E(x.Message)}");
+            sb.AppendLine($"{E(x.ElementType)},{E(x.StoryOrLevel)},{E(x.RevitName)},{E(x.EtabsName)},{x.Status},{x.Severity},{x.PositionDeltaMm:0.###},{x.ElevationDeltaMm:0.###},{x.WidthDeltaMm:0.###},{x.DepthDeltaMm:0.###},{x.LengthDeltaMm:0.###},{x.RotationDeltaDeg:0.###},{x.Confidence:0.0},{E(x.Message)}");
         }
 
         File.WriteAllText(dlg.FileName, sb.ToString(), Encoding.UTF8);

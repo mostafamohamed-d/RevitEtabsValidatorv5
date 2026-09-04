@@ -42,21 +42,6 @@
     <DefineConstants>$(DefineConstants);REVIT2025;ETABS22</DefineConstants>
   </PropertyGroup>
 
-  <ItemGroup>
-    <Reference Include="RevitAPI">
-      <HintPath>$(RevitInstallPath)\RevitAPI.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="RevitAPIUI">
-      <HintPath>$(RevitInstallPath)\RevitAPIUI.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="ETABSv1">
-      <HintPath>$(EtabsInstallPath)\ETABSv1.dll</HintPath>
-      <Private>true</Private>
-    </Reference>
-  </ItemGroup>
-
   <!-- System.Text.Json is available in the .NET 8 shared framework. Revit 2024 needs
        the NuGet implementation because it runs on .NET Framework 4.8. -->
   <ItemGroup Condition="'$(TargetFramework)'=='net48'">
@@ -71,6 +56,18 @@
 
   <ItemGroup>
     <Page Include="Revit\UI\*.xaml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="ETABSv1">
+      <HintPath>..\..\..\..\..\Program Files\Computers and Structures\ETABS 21\ETABSv1.dll</HintPath>
+    </Reference>
+    <Reference Include="RevitAPI">
+      <HintPath>..\..\..\..\..\Program Files\Autodesk\Revit 2024\RevitAPI.dll</HintPath>
+    </Reference>
+    <Reference Include="RevitAPIUI">
+      <HintPath>..\..\..\..\..\Program Files\Autodesk\Revit 2024\RevitAPIUI.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
   <PropertyGroup>
