@@ -14,6 +14,10 @@ public sealed class ValidationTolerance
     // Matching scores are normalized and therefore dimensionless.
     public double AmbiguousScoreGap { get; set; } = 0.25;
 
+    // A beam is considered the same plan line only when this fraction of the
+    // shorter projected segment overlaps the other segment.
+    public double BeamMinimumOverlapRatio { get; set; } = 0.80;
+
     // Project coordinate rule: compare Revit internal coordinates directly with
     // ETABS global coordinates after unit normalization. Do not silently switch
     // to Revit shared coordinates, project base point coordinates, or an inferred
