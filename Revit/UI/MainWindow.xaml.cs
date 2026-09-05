@@ -7,6 +7,7 @@ using RevitEtabsValidator.ETABS;
 using RevitEtabsValidator.Revit.Commands;
 using System.Collections.ObjectModel;
 using System.IO;
+using IOPath = System.IO.Path;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
@@ -443,7 +444,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "RevitEtabsValidation.csv");
+            var path = IOPath.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "RevitEtabsValidation.csv");
             var sb = new StringBuilder();
             sb.AppendLine("Type,Level,Revit,RevitId,ETABS,ETABSId,Status,Severity,PositionMm,ElevationMm,WidthMm,DepthMm,LengthMm,RotationDeg,Confidence,Message");
             foreach (var r in _all)
@@ -465,7 +466,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "RevitEtabsValidation.json");
+            var path = IOPath.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "RevitEtabsValidation.json");
             File.WriteAllText(path, JsonSerializer.Serialize(_all, new JsonSerializerOptions { WriteIndented = true }));
             SetStatus("JSON exported: " + path);
         }
