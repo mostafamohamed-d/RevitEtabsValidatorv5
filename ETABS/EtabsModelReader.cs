@@ -26,6 +26,9 @@ public sealed class EtabsModelReader
 
     public int ExcludedZeroNameCount { get; private set; }
 
+    public IReadOnlyDictionary<string, double> StoryElevationsMm { get; private set; }
+        = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+
     public List<ColumnElement> ReadColumns() => ReadFrames<ColumnElement>(eFrameDesignOrientation.Column);
 
     public List<BeamElement> ReadBeams() => ReadFrames<BeamElement>(eFrameDesignOrientation.Beam);
@@ -42,7 +45,7 @@ public sealed class EtabsModelReader
         if (rc != 0 || names == null || names.Length == 0)
             return list;
 
-        var storyElevations = ReadStoryElevations();
+        StoryElevationsMm = ReadStoryElevations();
 
         foreach (var name in names)
         {
@@ -84,13 +87,10 @@ public sealed class EtabsModelReader
                         story = tmpStory ?? string.Empty;
                     }
                 }
-                catch
-                {
-                    // Keep the frame name and infer story below if possible.
-                }
+                catch { }
 
                 if (string.IsNullOrWhiteSpace(story))
-                    story = ClosestStory((start.Z + end.Z) / 2.0, storyElevations);
+                    story = ClosestStory((start.Z + end.Z) / 2.0, StoryElevationsMm);
 
                 string sectionName = string.Empty;
                 try
@@ -100,10 +100,7 @@ public sealed class EtabsModelReader
                     if (frames.GetSection(name, ref prop, ref autoSelect) == 0)
                         sectionName = prop ?? string.Empty;
                 }
-                catch
-                {
-                    // Leave section unresolved; width/depth will be zero.
-                }
+                catch { }
 
                 var (width, depth) = ReadRectangleSection(sectionName);
 
@@ -116,10 +113,7 @@ public sealed class EtabsModelReader
                         if (frames.GetLocalAxes(name, ref angle, ref advanced) != 0)
                             angle = 0.0;
                     }
-                    catch
-                    {
-                        angle = 0.0;
-                    }
+                    catch { angle = 0.0; }
 
                     list.Add((T)(ElementBase)new ColumnElement
                     {
@@ -140,11 +134,10 @@ public sealed class EtabsModelReader
                 }
                 else
                 {
-                    // Project beam elevation rule: compare Revit's beam reference
-                    // elevation against the TOP of the ETABS beam section. For the
-                    // current coordination convention the ETABS frame joints are
-                    // at the section centerline, so add half the section depth to Z.
-                    // XY remains unchanged, and horizontal beam length is unchanged.
+                    // Keep the existing project beam-geometry convention: the
+                    // ETABS frame line is shifted vertically by half its depth
+                    // so that the common beam midpoint plane corresponds to the
+                    // Revit reference/elevation convention.
                     var topStart = new Point3D(start.X, start.Y, start.Z + depth / 2.0);
                     var topEnd = new Point3D(end.X, end.Y, end.Z + depth / 2.0);
 
@@ -174,16 +167,10 @@ public sealed class EtabsModelReader
 
     private Point3D GetPoint(string pointName)
     {
-        double x = 0.0;
-        double y = 0.0;
-        double z = 0.0;
-
-        // Explicit ETABS Global frame. Revit is coordinated against these values
-        // because the project's DXF/reference workflow uses Revit Internal Origin.
+        double x = 0.0, y = 0.0, z = 0.0;
         int rc = _sap.PointObj.GetCoordCartesian(pointName, ref x, ref y, ref z, "Global");
         if (rc != 0)
             throw new InvalidOperationException($"PointObj.GetCoordCartesian failed for '{pointName}' with return code {rc}.");
-
         return new Point3D(x, y, z);
     }
 
@@ -203,22 +190,13 @@ public sealed class EtabsModelReader
             string guid = string.Empty;
 
             int rc = _sap.PropFrame.GetRectangle(
-                sectionName,
-                ref fileName,
-                ref material,
-                ref t3,
-                ref t2,
-                ref color,
-                ref notes,
-                ref guid);
+                sectionName, ref fileName, ref material, ref t3, ref t2,
+                ref color, ref notes, ref guid);
 
             if (rc == 0)
                 return (t2, t3);
         }
-        catch
-        {
-            // Non-rectangular section or unavailable property: keep dimensions unknown.
-        }
+        catch { }
 
         return (0.0, 0.0);
     }
@@ -245,10 +223,7 @@ public sealed class EtabsModelReader
                     result[name] = elevation;
             }
         }
-        catch
-        {
-            // Story information is supplemental.
-        }
+        catch { }
 
         return result;
     }
@@ -260,7 +235,6 @@ public sealed class EtabsModelReader
 
         string best = string.Empty;
         double bestDelta = double.MaxValue;
-
         foreach (var pair in stories)
         {
             double delta = Math.Abs(pair.Value - z);
@@ -270,7 +244,6 @@ public sealed class EtabsModelReader
                 best = pair.Key;
             }
         }
-
         return best;
     }
 }
