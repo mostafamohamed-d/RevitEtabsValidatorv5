@@ -140,6 +140,14 @@ public sealed class EtabsModelReader
                 }
                 else
                 {
+                    // Project beam elevation rule: compare Revit's beam reference
+                    // elevation against the TOP of the ETABS beam section. For the
+                    // current coordination convention the ETABS frame joints are
+                    // at the section centerline, so add half the section depth to Z.
+                    // XY remains unchanged, and horizontal beam length is unchanged.
+                    var topStart = new Point3D(start.X, start.Y, start.Z + depth / 2.0);
+                    var topEnd = new Point3D(end.X, end.Y, end.Z + depth / 2.0);
+
                     list.Add((T)(ElementBase)new BeamElement
                     {
                         Id = name,
@@ -148,8 +156,8 @@ public sealed class EtabsModelReader
                         LevelName = story,
                         Source = SourceApplication.Etabs,
                         CoordinateBasis = CoordinateReference.EtabsGlobal,
-                        StartPoint = start,
-                        EndPoint = end,
+                        StartPoint = topStart,
+                        EndPoint = topEnd,
                         Width = width,
                         Depth = depth
                     });
