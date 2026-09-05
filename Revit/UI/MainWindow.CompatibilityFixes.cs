@@ -5,14 +5,12 @@ using System.Windows.Media;
 namespace RevitEtabsValidator.Revit.UI;
 
 /// <summary>
-/// Small compatibility fixes kept separate from MainWindow.xaml.cs so UI changes
-/// can be evolved without repeatedly rewriting the large code-behind file.
+/// Small UI compatibility fixes kept separate from MainWindow.xaml.cs.
 /// </summary>
 public partial class MainWindow
 {
-    // MainWindow.xaml.cs contains an old reverse-mapping name in BuildFloorMapping.
-    // Keep it as a safe alias to the canonical reverse dictionary.
-    private Dictionary<string, string> _revitToEtabsLevel => _etabsToRevitLevel;
+    // The floor-mapping dictionaries are defined in MainWindow.xaml.cs.
+    // Do not redeclare them here; this file only contains UI compatibility behavior.
 
     static MainWindow()
     {
