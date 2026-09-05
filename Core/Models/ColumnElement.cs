@@ -7,8 +7,8 @@ public sealed class ColumnElement : ElementBase
     public Point3D TopPoint { get => EndPoint; set => EndPoint = value; }
     public double BaseElevation { get; set; }
     public double TopElevation { get; set; }
-    public double Width { get; set; }
-    public double Depth { get; set; }
+    public override double Width { get; set; }
+    public override double Depth { get; set; }
     public double Rotation { get; set; }
     public BoundingBox3D BoundingBox { get; set; }
 }
