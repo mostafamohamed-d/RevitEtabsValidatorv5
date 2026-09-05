@@ -30,6 +30,7 @@ public sealed class RevitElementReader
                      .OfType<FamilyInstance>())
         {
             var level = RevitLevelService.GetLevel(_doc, e);
+            var topLevel = RevitLevelService.GetTopLevel(_doc, e);
             Point3D a, b;
             double rot = 0;
 
@@ -62,7 +63,13 @@ public sealed class RevitElementReader
                 Id = e.Id.Value.ToString(),
                 Name = e.Name,
                 SectionName = e.Symbol?.Name ?? "",
-                LevelName = level?.Name ?? RevitLevelService.Nearest(_doc, RevitUnit.MmToFt((a.Z + b.Z) / 2))?.Name ?? "",
+                // For columns, use the TOP LEVEL as the displayed/coordination level.
+                // Fall back to the base/reference level only when no top-level
+                // parameter is available (for example, an unusual column family).
+                LevelName = topLevel?.Name
+                            ?? level?.Name
+                            ?? RevitLevelService.Nearest(_doc, RevitUnit.MmToFt((a.Z + b.Z) / 2))?.Name
+                            ?? "",
                 Source = SourceApplication.Revit,
                 CoordinateBasis = CoordinateReference.RevitInternalOrigin,
                 StartPoint = a,
