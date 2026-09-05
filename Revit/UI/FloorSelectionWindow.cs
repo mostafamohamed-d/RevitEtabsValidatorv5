@@ -22,8 +22,7 @@ public sealed class FloorSelectionWindow : Window
     private readonly List<FloorScopeItem> _items;
     private readonly StackPanel _rows = new();
 
-    public IReadOnlyList<FloorScopeItem> SelectedItems
-        => _items.Where(x => x.IsSelected).ToList();
+    public IReadOnlyList<FloorScopeItem> SelectedItems => _items.Where(x => x.IsSelected).ToList();
 
     public FloorSelectionWindow(IEnumerable<FloorScopeItem> items)
     {
@@ -42,37 +41,38 @@ public sealed class FloorSelectionWindow : Window
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-        var title = new TextBlock
+        var header = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
+        header.Children.Add(new TextBlock
         {
             Text = "Choose the floors to validate",
             FontSize = 20,
-            FontWeight = FontWeights.SemiBold,
-            Margin = new Thickness(0, 0, 0, 4)
-        };
-        root.Children.Add(title);
-
-        var subtitle = new TextBlock
+            FontWeight = FontWeights.SemiBold
+        });
+        header.Children.Add(new TextBlock
         {
             Text = "Only selected Revit levels and their mapped ETABS stories will enter the comparison. This can significantly reduce validation time on large models.",
             TextWrapping = TextWrapping.Wrap,
             Foreground = Brushes.DimGray,
-            Margin = new Thickness(0, 30, 0, 10)
-        };
-        Grid.SetRow(subtitle, 0);
-        root.Children.Add(subtitle);
+            Margin = new Thickness(0, 4, 0, 0)
+        });
+        root.Children.Add(header);
 
         var scroller = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         scroller.Content = _rows;
         Grid.SetRow(scroller, 1);
         root.Children.Add(scroller);
-
         BuildRows();
 
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
-        var all = Button("Select All", 100, (s, e) => SetAll(true));
-        var none = Button("Clear", 90, (s, e) => SetAll(false));
-        var cancel = Button("Cancel", 90, (s, e) => { DialogResult = false; Close(); });
-        var ok = Button("Run Selected", 120, (s, e) =>
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 12, 0, 0)
+        };
+        buttons.Children.Add(Button("Select All", 100, (_, _) => SetAll(true)));
+        buttons.Children.Add(Button("Clear", 90, (_, _) => SetAll(false)));
+        buttons.Children.Add(Button("Cancel", 90, (_, _) => { DialogResult = false; Close(); }));
+        buttons.Children.Add(Button("Run Selected", 120, (_, _) =>
         {
             if (SelectedItems.Count == 0)
             {
@@ -81,11 +81,7 @@ public sealed class FloorSelectionWindow : Window
             }
             DialogResult = true;
             Close();
-        });
-        buttons.Children.Add(all);
-        buttons.Children.Add(none);
-        buttons.Children.Add(cancel);
-        buttons.Children.Add(ok);
+        }));
         Grid.SetRow(buttons, 2);
         root.Children.Add(buttons);
 
