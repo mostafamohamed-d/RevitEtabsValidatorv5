@@ -53,10 +53,10 @@ public sealed class RevitElementReader
 
             var sec = SectionDimensionService.Get(_doc, e);
 
-            // Column section convention for Revit ↔ ETABS:
-            // Revit b = ETABS Depth, Revit h = ETABS Width.
             // SectionDimensionService returns the Revit b-like value first and
-            // h-like value second, so swap them into the common model fields.
+            // h-like value second. The common Width/Depth fields are kept in
+            // Revit-native semantic order here; ModelComparer applies the
+            // project-specific mapping b -> ETABS Depth and h -> ETABS Width.
             list.Add(new ColumnElement
             {
                 Id = e.Id.Value.ToString(),
@@ -69,8 +69,8 @@ public sealed class RevitElementReader
                 EndPoint = b,
                 BaseElevation = Math.Min(a.Z, b.Z),
                 TopElevation = Math.Max(a.Z, b.Z),
-                Width = sec.depthMm,
-                Depth = sec.widthMm,
+                Width = sec.widthMm,
+                Depth = sec.depthMm,
                 Rotation = rot,
                 BoundingBox = new BoundingBox3D(
                     new Point3D(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Min(a.Z, b.Z)),
