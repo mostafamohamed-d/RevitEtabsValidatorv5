@@ -7,17 +7,20 @@ namespace RevitEtabsValidator.Core.Comparison;
 /// <summary>
 /// Geometry-first one-to-one correspondence engine.
 ///
-/// Columns are point-like objects in plan; beams are finite plan line segments.
-/// Revit uses Internal Origin coordinates and ETABS uses Global coordinates, both
-/// normalized to millimetres by their readers. The broad-phase spatial index only
-/// reduces candidate work; the exact identity gates below remain authoritative.
+/// Columns are point-like objects in plan; their XY center establishes identity.
+/// Column elevation validation compares the column midpoint Z between Revit and ETABS.
+/// Base/top elevations remain available for diagnostics but are not the primary
+/// column elevation comparison rule.
+///
+/// Beams are finite plan line segments. Their plan-line direction, perpendicular
+/// offset and segment overlap establish identity. Beam elevation validation is
+/// separate from beam identity and compares the Revit beam midpoint/reference Z
+/// against the ETABS frame Z plus half of the ETABS beam depth, per the project
+/// coordination convention.
 /// </summary>
 public sealed class ModelComparer
 {
-    public ValidationReport CompareColumns(
-        IReadOnlyList<ColumnElement> revit,
-        IReadOnlyList<ColumnElement> etabs,
-        ValidationTolerance tol)
+    public ValidationReport CompareColumns(IReadOnlyList<ColumnElement> revit, IReadOnlyList<ColumnElement> etabs, ValidationTolerance tol)
     {
         var report = new ValidationReport();
         var remaining = new HashSet<string>(etabs.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
@@ -51,8 +54,7 @@ public sealed class ModelComparer
             }
 
             var best = candidates[0];
-            if (candidates.Count > 1 &&
-                Math.Abs(candidates[1].Score - best.Score) < Math.Max(0, tol.AmbiguousScoreGap))
+            if (candidates.Count > 1 && Math.Abs(candidates[1].Score - best.Score) < Math.Max(0, tol.AmbiguousScoreGap))
             {
                 report.Results.Add(Ambiguous(item.r, best.e, "Column"));
                 continue;
@@ -68,10 +70,7 @@ public sealed class ModelComparer
         return report;
     }
 
-    public ValidationReport CompareBeams(
-        IReadOnlyList<BeamElement> revit,
-        IReadOnlyList<BeamElement> etabs,
-        ValidationTolerance tol)
+    public ValidationReport CompareBeams(IReadOnlyList<BeamElement> revit, IReadOnlyList<BeamElement> etabs, ValidationTolerance tol)
     {
         var report = new ValidationReport();
         var remaining = new HashSet<string>(etabs.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
@@ -107,8 +106,7 @@ public sealed class ModelComparer
             }
 
             var best = candidates[0];
-            if (candidates.Count > 1 &&
-                Math.Abs(candidates[1].Score - best.Score) < Math.Max(0, tol.AmbiguousScoreGap))
+            if (candidates.Count > 1 && Math.Abs(candidates[1].Score - best.Score) < Math.Max(0, tol.AmbiguousScoreGap))
             {
                 report.Results.Add(Ambiguous(item.r, best.e, "Beam"));
                 continue;
@@ -148,9 +146,8 @@ public sealed class ModelComparer
     private static double ColumnScore(ColumnElement r, ColumnElement e, ValidationTolerance t)
     {
         var plan = r.CenterPoint.PlanDistanceTo(e.CenterPoint) / Safe(t.PositionToleranceMm);
-        var baseDelta = Math.Abs((r.BaseElevation + t.ColumnZOffsetMm) - e.BaseElevation);
-        var topDelta = Math.Abs((r.TopElevation + t.ColumnZOffsetMm) - e.TopElevation);
-        var z = (baseDelta + topDelta) / (2.0 * Safe(t.ElevationToleranceMm));
+        var midpointElevationDelta = Math.Abs((r.CenterPoint.Z + t.ColumnZOffsetMm) - e.CenterPoint.Z);
+        var z = midpointElevationDelta / Safe(t.ElevationToleranceMm);
         var widthDelta = Math.Abs(r.Depth - e.Width);
         var depthDelta = Math.Abs(r.Width - e.Depth);
         var section = SectionPenalty(widthDelta, depthDelta, t.DimensionToleranceMm);
@@ -164,7 +161,7 @@ public sealed class ModelComparer
         var line = g.LineOffset / Safe(t.PositionToleranceMm);
         var midpoint = g.MidpointDeviation / Safe(t.PositionToleranceMm);
         var overlap = 1.0 - g.OverlapRatio;
-        var z = g.EndpointElevationDeviation / Safe(t.ElevationToleranceMm);
+        var z = g.ExpectedRevitMidpointElevationDelta / Safe(t.ElevationToleranceMm);
         var len = g.LengthDelta / Safe(t.LengthToleranceMm);
         var angle = g.AngleDelta / Safe(t.AngleToleranceDegrees);
         var section = SectionPenalty(Math.Abs(r.Width - e.Width), Math.Abs(r.Depth - e.Depth), t.DimensionToleranceMm);
@@ -176,6 +173,7 @@ public sealed class ModelComparer
         double MidpointDeviation,
         double OverlapRatio,
         double EndpointPlanDeviation,
+        double ExpectedRevitMidpointElevationDelta,
         double EndpointElevationDeviation,
         double LengthDelta,
         double AngleDelta);
@@ -198,11 +196,13 @@ public sealed class ModelComparer
             var fallback = Math.Max(
                 Math.Max(r0.PlanDistanceTo(e0), r0.PlanDistanceTo(e1)),
                 Math.Max(r1.PlanDistanceTo(e0), r1.PlanDistanceTo(e1)));
+            var expectedRevitMidpointZ = e.CenterPoint.Z + Math.Max(0.0, e.Depth) / 2.0;
             return new BeamGeometryResult(
                 fallback,
                 r.CenterPoint.PlanDistanceTo(e.CenterPoint),
                 0.0,
                 fallback,
+                Math.Abs(r.CenterPoint.Z + t.BeamZOffsetMm - expectedRevitMidpointZ),
                 Math.Max(Math.Abs(r0.Z + t.BeamZOffsetMm - e0.Z), Math.Abs(r1.Z + t.BeamZOffsetMm - e1.Z)),
                 Math.Abs(r.LengthMm - e.LengthMm),
                 180.0);
@@ -245,12 +245,15 @@ public sealed class ModelComparer
             Math.Abs(r0.Z + t.BeamZOffsetMm - e1.Z),
             Math.Abs(r1.Z + t.BeamZOffsetMm - e0.Z));
         var endpointElevationDeviation = reversePlanMax < samePlanMax ? reverseElevMax : sameElevMax;
+        var expectedRevitMidpointZ = e.CenterPoint.Z + Math.Max(0.0, e.Depth) / 2.0;
+        var expectedRevitMidpointElevationDelta = Math.Abs((r.CenterPoint.Z + t.BeamZOffsetMm) - expectedRevitMidpointZ);
 
         return new BeamGeometryResult(
             lineOffset,
             midpointDeviation,
             overlapRatio,
             endpointPlanDeviation,
+            expectedRevitMidpointElevationDelta,
             endpointElevationDeviation,
             Math.Abs(r.LengthMm - e.LengthMm),
             angleDelta);
@@ -266,26 +269,24 @@ public sealed class ModelComparer
     private static ValidationResult ColumnResult(ColumnElement r, ColumnElement e, ValidationTolerance t)
     {
         var p = r.CenterPoint.PlanDistanceTo(e.CenterPoint);
-        var baseDelta = Math.Abs((r.BaseElevation + t.ColumnZOffsetMm) - e.BaseElevation);
-        var topDelta = Math.Abs((r.TopElevation + t.ColumnZOffsetMm) - e.TopElevation);
-        var z = Math.Max(baseDelta, topDelta);
+        var midpointElevationDelta = Math.Abs((r.CenterPoint.Z + t.ColumnZOffsetMm) - e.CenterPoint.Z);
         var widthDelta = Math.Abs(r.Depth - e.Width);
         var depthDelta = Math.Abs(r.Width - e.Depth);
         var rot = AngleMath.CircularDeltaDegrees(r.Rotation, e.Rotation, 180);
         var okP = p <= t.PositionToleranceMm;
-        var okE = z <= t.ElevationToleranceMm;
+        var okE = midpointElevationDelta <= t.ElevationToleranceMm;
         var okS = UnknownSection(r, e) || (widthDelta <= t.DimensionToleranceMm && depthDelta <= t.DimensionToleranceMm);
         var okR = rot <= t.AngleToleranceDegrees;
         var result = Base(r, e, "Column");
         result.PositionDeltaMm = p;
-        result.ElevationDeltaMm = z;
+        result.ElevationDeltaMm = midpointElevationDelta;
         result.WidthDeltaMm = widthDelta;
         result.DepthDeltaMm = depthDelta;
         result.RotationDeltaDeg = rot;
         result.Status = okP && okE && okS && okR ? ValidationStatus.Matched : !okS ? ValidationStatus.SectionMismatch : !okP ? ValidationStatus.PositionMismatch : !okE ? ValidationStatus.ElevationMismatch : ValidationStatus.RotationMismatch;
         result.Severity = result.Status == ValidationStatus.Matched ? Severity.Info : Severity.Warning;
-        result.Confidence = Confidence(new[] { p / Safe(t.PositionToleranceMm), z / Safe(t.ElevationToleranceMm), SectionRatio(widthDelta, depthDelta, r, e, t.DimensionToleranceMm), rot / Safe(t.AngleToleranceDegrees) });
-        result.Message = result.Status == ValidationStatus.Matched ? "Column correspondence confirmed by plan point; base/top elevation and orientation are within tolerance." : $"{result.Status}: Δpos {p:F1} mm; Δelev {z:F1} mm; Δsection Width {widthDelta:F1} / Depth {depthDelta:F1} mm; Δrot {rot:F1}°.";
+        result.Confidence = Confidence(new[] { p / Safe(t.PositionToleranceMm), midpointElevationDelta / Safe(t.ElevationToleranceMm), SectionRatio(widthDelta, depthDelta, r, e, t.DimensionToleranceMm), rot / Safe(t.AngleToleranceDegrees) });
+        result.Message = result.Status == ValidationStatus.Matched ? "Column correspondence confirmed by plan point; midpoint elevation, section and orientation are within tolerance." : $"{result.Status}: Δpos {p:F1} mm; Δmid-elev {midpointElevationDelta:F1} mm; Δsection Width {widthDelta:F1} / Depth {depthDelta:F1} mm; Δrot {rot:F1}°.";
         AddDiffs(result);
         return result;
     }
@@ -296,23 +297,18 @@ public sealed class ModelComparer
         var wd = Math.Abs(r.Width - e.Width);
         var dd = Math.Abs(r.Depth - e.Depth);
         var okP = g.LineOffset <= t.PositionToleranceMm && g.OverlapRatio >= Clamp01(t.BeamMinimumOverlapRatio);
-        var okE = g.EndpointElevationDeviation <= t.ElevationToleranceMm;
-        var okL = g.LengthDelta <= t.LengthToleranceMm;
+        var okE = g.ExpectedRevitMidpointElevationDelta <= t.ElevationToleranceMm;
         var okS = UnknownSection(r, e) || (wd <= t.DimensionToleranceMm && dd <= t.DimensionToleranceMm);
         var okR = g.AngleDelta <= t.AngleToleranceDegrees;
 
         var result = Base(r, e, "Beam");
         result.PositionDeltaMm = g.LineOffset;
-        result.ElevationDeltaMm = g.EndpointElevationDeviation;
+        result.ElevationDeltaMm = g.ExpectedRevitMidpointElevationDelta;
         result.WidthDeltaMm = wd;
         result.DepthDeltaMm = dd;
         result.LengthDeltaMm = g.LengthDelta;
         result.RotationDeltaDeg = g.AngleDelta;
 
-        // Beam identity is plan-line geometry. A different analytical/physical
-        // span length can be expected from end offsets, column-face vs column-center
-        // representation, or other analytical offsets. Therefore length is reported
-        // as a diagnostic but does not by itself invalidate correspondence.
         result.Status = okP && okE && okS && okR
             ? ValidationStatus.Matched
             : !okS ? ValidationStatus.SectionMismatch
@@ -326,15 +322,15 @@ public sealed class ModelComparer
             g.LineOffset / Safe(t.PositionToleranceMm),
             g.MidpointDeviation / Safe(t.PositionToleranceMm),
             1.0 - g.OverlapRatio,
-            g.EndpointElevationDeviation / Safe(t.ElevationToleranceMm),
+            g.ExpectedRevitMidpointElevationDelta / Safe(t.ElevationToleranceMm),
             g.LengthDelta / Safe(t.LengthToleranceMm),
             SectionRatio(wd, dd, r, e, t.DimensionToleranceMm),
             g.AngleDelta / Safe(t.AngleToleranceDegrees)
         });
 
         result.Message = result.Status == ValidationStatus.Matched
-            ? $"Beam correspondence confirmed by plan line; line offset {g.LineOffset:F1} mm and {g.OverlapRatio:P0} overlap. Span ΔL = {g.LengthDelta:F1} mm is reported diagnostically; elevation, section and direction are within tolerance."
-            : $"{result.Status}: line offset {g.LineOffset:F1} mm; overlap {g.OverlapRatio:P0}; Δelev {g.EndpointElevationDeviation:F1} mm; span ΔL {g.LengthDelta:F1} mm; Δsection {wd:F1}x{dd:F1} mm; Δrot {g.AngleDelta:F1}°.";
+            ? $"Beam correspondence confirmed by plan line; Revit midpoint elevation matches ETABS frame Z + half ETABS depth. Span ΔL = {g.LengthDelta:F1} mm is reported diagnostically."
+            : $"{result.Status}: line offset {g.LineOffset:F1} mm; overlap {g.OverlapRatio:P0}; Δmid-elev {g.ExpectedRevitMidpointElevationDelta:F1} mm; span ΔL {g.LengthDelta:F1} mm; Δsection {wd:F1}x{dd:F1} mm; Δrot {g.AngleDelta:F1}°.";
         AddDiffs(result);
         return result;
     }
