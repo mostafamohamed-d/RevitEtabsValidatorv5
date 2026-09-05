@@ -10,6 +10,16 @@ public static class RevitLevelService
         }
         return null;
     }
+
+    public static Level? GetTopLevel(Document doc, Element e)
+    {
+        foreach(var bip in new[]{BuiltInParameter.FAMILY_TOP_LEVEL_PARAM})
+        {
+            try { var p=e.get_Parameter(bip); if(p!=null && p.StorageType==StorageType.ElementId){var l=doc.GetElement(p.AsElementId()) as Level; if(l!=null)return l;} } catch{}
+        }
+        return null;
+    }
+
     public static Level? Nearest(Document doc,double zFt)
         => new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().OrderBy(x=>Math.Abs(x.Elevation-zFt)).FirstOrDefault();
 }
