@@ -2,27 +2,25 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Revit ↔ ETABS Structural Model Validator"
-        Height="900" Width="1500" MinHeight="720" MinWidth="1180"
-        WindowStartupLocation="CenterScreen"
-        ResizeMode="CanResize">
+        Height="920" Width="1500" MinHeight="760" MinWidth="1180"
+        WindowStartupLocation="CenterScreen" ResizeMode="CanResize">
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="68"/>
             <RowDefinition Height="*"/>
+            <RowDefinition Height="190"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <Border Background="#F4F6F8" CornerRadius="8" Padding="12" Margin="0,0,0,8">
             <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <StackPanel>
                     <TextBlock Text="Revit ↔ ETABS Structural Model Validator" FontSize="22" FontWeight="SemiBold"/>
-                    <TextBlock Text="Geometry-first coordination using Revit Internal Origin ↔ ETABS Global coordinates" Foreground="DimGray" Margin="0,3,0,0"/>
+                    <TextBlock Text="Advanced structural coordination — Internal Origin ↔ ETABS Global" Foreground="DimGray" Margin="0,3,0,0"/>
                 </StackPanel>
                 <Border Grid.Column="1" Background="White" BorderBrush="#D5D9DE" BorderThickness="1" CornerRadius="6" Padding="10,6">
                     <StackPanel Orientation="Horizontal">
@@ -38,7 +36,7 @@
             <Button Content="Connect ETABS" Width="125" Height="30" Margin="0,0,6,0" Click="ConnectEtabs_Click"/>
             <CheckBox x:Name="StartEtabs" Content="Start ETABS if not running" VerticalAlignment="Center" IsChecked="False" Margin="0,0,16,0"/>
             <Button Content="Run Validation" Width="125" Height="30" Margin="0,0,6,0" Click="RunValidation_Click"/>
-            <Button Content="Select Floors" Width="105" Height="30" Margin="0,0,6,0" Click="SelectFloors_Click"/>
+            <Button Content="Validation Scope…" Width="125" Height="30" Margin="0,0,6,0" Click="SelectFloors_Click"/>
             <Button Content="Export CSV" Width="100" Height="30" Margin="12,0,6,0" Click="ExportCsv_Click"/>
             <Button Content="Export JSON" Width="105" Height="30" Click="ExportJson_Click"/>
         </StackPanel>
@@ -51,8 +49,7 @@
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="65"/>
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="65"/>
                     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="65"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="Position ±" VerticalAlignment="Center"/>
                 <TextBox x:Name="PositionTol" Text="25" Width="55" Grid.Column="1" Margin="4,0,12,0"/>
@@ -71,7 +68,7 @@
             </Grid>
         </Border>
 
-        <UniformGrid Grid.Row="3" Rows="1" Columns="8" Margin="0,0,0,8" Height="68" VerticalAlignment="Top">
+        <UniformGrid Grid.Row="3" Rows="1" Columns="8" Margin="0,0,0,8">
             <Border BorderBrush="LightGray" BorderThickness="1" Padding="8"><StackPanel><TextBlock Text="Revit Columns" FontWeight="Bold"/><TextBlock x:Name="RevitColCount" Text="0" FontSize="20"/></StackPanel></Border>
             <Border BorderBrush="LightGray" BorderThickness="1" Padding="8"><StackPanel><TextBlock Text="ETABS Columns" FontWeight="Bold"/><TextBlock x:Name="EtabsColCount" Text="0" FontSize="20"/></StackPanel></Border>
             <Border BorderBrush="LightGray" BorderThickness="1" Padding="8"><StackPanel><TextBlock Text="Revit Beams" FontWeight="Bold"/><TextBlock x:Name="RevitBeamCount" Text="0" FontSize="20"/></StackPanel></Border>
@@ -82,12 +79,8 @@
             <Border BorderBrush="LightGray" BorderThickness="1" Padding="8"><StackPanel><TextBlock Text="Missing" FontWeight="Bold"/><TextBlock x:Name="MissingCount" Text="0" FontSize="20"/></StackPanel></Border>
         </UniformGrid>
 
-        <Grid Grid.Row="3" Margin="0,78,0,0">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="230"/>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="330"/>
-            </Grid.ColumnDefinitions>
+        <Grid Grid.Row="4">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="230"/><ColumnDefinition Width="*"/><ColumnDefinition Width="330"/></Grid.ColumnDefinitions>
             <Border BorderBrush="#D8DDE2" BorderThickness="1" CornerRadius="6" Padding="10" Grid.Column="0" Margin="0,0,8,0">
                 <Grid>
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -125,12 +118,7 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel>
                         <TextBlock Text="Selected Member" FontSize="17" FontWeight="SemiBold"/>
-                        <Border Background="#F7F9FA" BorderBrush="#DDE2E7" BorderThickness="1" CornerRadius="5" Padding="8" Margin="0,8,0,10">
-                            <StackPanel>
-                                <TextBlock x:Name="SelectedTypeText" Text="—" FontWeight="Bold"/>
-                                <TextBlock x:Name="SelectedStatusText" Text="No member selected" Margin="0,3,0,0"/>
-                            </StackPanel>
-                        </Border>
+                        <Border Background="#F7F9FA" BorderBrush="#DDE2E7" BorderThickness="1" CornerRadius="5" Padding="8" Margin="0,8,0,10"><StackPanel><TextBlock x:Name="SelectedTypeText" Text="—" FontWeight="Bold"/><TextBlock x:Name="SelectedStatusText" Text="No member selected" Margin="0,3,0,0"/></StackPanel></Border>
                         <TextBlock Text="Correspondence" FontWeight="Bold" Margin="0,2,0,5"/>
                         <TextBlock x:Name="SelectedRevitText" Text="Revit: —" TextWrapping="Wrap"/>
                         <TextBlock x:Name="SelectedEtabsText" Text="ETABS: —" TextWrapping="Wrap" Margin="0,3,0,0"/>
@@ -143,22 +131,16 @@
                         <TextBlock x:Name="SelectedDeltaText" Text="—" TextWrapping="Wrap" Margin="0,3,0,0" FontFamily="Consolas"/>
                         <TextBlock Text="Why?" FontWeight="Bold" Margin="0,10,0,0"/>
                         <TextBlock x:Name="SelectedReasonText" Text="Select a beam or column in the plan." TextWrapping="Wrap" Margin="0,3,0,0"/>
-                        <StackPanel Orientation="Horizontal" Margin="0,15,0,0">
-                            <Button Content="Open Details" Width="105" Height="30" Margin="0,0,6,0" Click="OpenDetails_Click"/>
-                            <Button Content="Select in Revit" Width="110" Height="30" Click="SelectInRevit_Click"/>
-                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,15,0,0"><Button Content="Open Details" Width="105" Height="30" Margin="0,0,6,0" Click="OpenDetails_Click"/><Button Content="Select in Revit" Width="110" Height="30" Click="SelectInRevit_Click"/></StackPanel>
                     </StackPanel>
                 </ScrollViewer>
             </Border>
         </Grid>
 
-        <Border Grid.Row="4" BorderBrush="#D8DDE2" BorderThickness="1" CornerRadius="6" Margin="0,8,0,0">
-            <Grid Height="175">
+        <Border Grid.Row="5" BorderBrush="#D8DDE2" BorderThickness="1" CornerRadius="6" Margin="0,8,0,0">
+            <Grid>
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                <DockPanel Margin="8,6">
-                    <TextBlock Text="Current Floor Results" FontWeight="SemiBold"/>
-                    <TextBlock x:Name="FloorResultsSummary" DockPanel.Dock="Right" Foreground="DimGray"/>
-                </DockPanel>
+                <DockPanel Margin="8,6"><TextBlock Text="Current Floor Results" FontWeight="SemiBold"/><TextBlock x:Name="FloorResultsSummary" DockPanel.Dock="Right" Foreground="DimGray"/></DockPanel>
                 <DataGrid x:Name="FloorResultsGrid" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" SelectionChanged="FloorResultsGrid_SelectionChanged" Margin="4">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Type" Binding="{Binding ElementType}" Width="65"/>
@@ -179,6 +161,6 @@
             </Grid>
         </Border>
 
-        <TextBlock Grid.Row="4" x:Name="StatusText" Margin="0,190,0,0" Foreground="DarkSlateGray"/>
+        <TextBlock Grid.Row="6" x:Name="StatusText" Margin="0,7,0,0" Foreground="DarkSlateGray"/>
     </Grid>
 </Window>
