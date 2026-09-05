@@ -15,6 +15,11 @@ public abstract class ElementBase
     // Explicit coordinate contract for the DXF/internal-origin workflow.
     public CoordinateReference CoordinateBasis { get; set; } = CoordinateReference.Unknown;
 
+    // Common section dimensions exposed at the base level so generic UI/detail
+    // code can safely format both columns and beams through ElementBase.
+    public abstract double Width { get; set; }
+    public abstract double Depth { get; set; }
+
     public Point3D StartPoint { get; set; }
     public Point3D EndPoint { get; set; }
     public Point3D CenterPoint => new((StartPoint.X + EndPoint.X) / 2.0, (StartPoint.Y + EndPoint.Y) / 2.0, (StartPoint.Z + EndPoint.Z) / 2.0);
