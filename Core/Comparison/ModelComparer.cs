@@ -6,6 +6,7 @@ namespace RevitEtabsValidator.Core.Comparison;
 
 /// <summary>
 /// Geometry-first one-to-one correspondence engine.
+///
 /// Columns are point-like objects in plan; beams are finite plan line segments.
 /// Revit uses Internal Origin coordinates and ETABS uses Global coordinates, both
 /// normalized to millimetres by their readers. The broad-phase spatial index only
@@ -126,8 +127,6 @@ public sealed class ModelComparer
     private static SpatialGridIndex<T> BuildIndex<T>(IReadOnlyList<T> values, ValidationTolerance tol)
         where T : ElementBase
     {
-        // 0.5 m cells are a good broad-phase compromise for structural grids.
-        // The exact geometry gate still enforces the user's configured tolerance.
         var cellSize = Math.Max(500.0, Math.Max(tol.PositionToleranceMm, 1.0) * 8.0);
         var index = new SpatialGridIndex<T>(cellSize);
         foreach (var value in values)
@@ -152,7 +151,6 @@ public sealed class ModelComparer
         var baseDelta = Math.Abs((r.BaseElevation + t.ColumnZOffsetMm) - e.BaseElevation);
         var topDelta = Math.Abs((r.TopElevation + t.ColumnZOffsetMm) - e.TopElevation);
         var z = (baseDelta + topDelta) / (2.0 * Safe(t.ElevationToleranceMm));
-        // Project rule: Revit b -> ETABS Depth, Revit h -> ETABS Width.
         var widthDelta = Math.Abs(r.Depth - e.Width);
         var depthDelta = Math.Abs(r.Width - e.Depth);
         var section = SectionPenalty(widthDelta, depthDelta, t.DimensionToleranceMm);
@@ -188,7 +186,6 @@ public sealed class ModelComparer
         var r1 = r.EndPoint;
         var e0 = e.StartPoint;
         var e1 = e.EndPoint;
-
         var rdx = r1.X - r0.X;
         var rdy = r1.Y - r0.Y;
         var edx = e1.X - e0.X;
@@ -215,7 +212,6 @@ public sealed class ModelComparer
         var ury = rdy / rLen;
         var uex = edx / eLen;
         var uey = edy / eLen;
-
         var lineOffset = Math.Max(
             Math.Max(PointToLineDistance(e0, r0, urx, ury), PointToLineDistance(e1, r0, urx, ury)),
             Math.Max(PointToLineDistance(r0, e0, uex, uey), PointToLineDistance(r1, e0, uex, uey)));
@@ -240,7 +236,6 @@ public sealed class ModelComparer
         var overlapRatio = Clamp01(overlap / Math.Max(1e-9, Math.Min(rLen, eLen)));
 
         var angleDelta = AngleMath.CircularDeltaDegrees(r.Rotation, e.Rotation, 180);
-
         var samePlanMax = Math.Max(sameEndA, sameEndB);
         var reversePlanMax = Math.Max(reverseEndA, reverseEndB);
         var sameElevMax = Math.Max(
@@ -274,39 +269,23 @@ public sealed class ModelComparer
         var baseDelta = Math.Abs((r.BaseElevation + t.ColumnZOffsetMm) - e.BaseElevation);
         var topDelta = Math.Abs((r.TopElevation + t.ColumnZOffsetMm) - e.TopElevation);
         var z = Math.Max(baseDelta, topDelta);
-        // Project rule: Revit b -> ETABS Depth, Revit h -> ETABS Width.
         var widthDelta = Math.Abs(r.Depth - e.Width);
         var depthDelta = Math.Abs(r.Width - e.Depth);
         var rot = AngleMath.CircularDeltaDegrees(r.Rotation, e.Rotation, 180);
-
         var okP = p <= t.PositionToleranceMm;
         var okE = z <= t.ElevationToleranceMm;
         var okS = UnknownSection(r, e) || (widthDelta <= t.DimensionToleranceMm && depthDelta <= t.DimensionToleranceMm);
         var okR = rot <= t.AngleToleranceDegrees;
-
         var result = Base(r, e, "Column");
         result.PositionDeltaMm = p;
         result.ElevationDeltaMm = z;
         result.WidthDeltaMm = widthDelta;
         result.DepthDeltaMm = depthDelta;
         result.RotationDeltaDeg = rot;
-        result.Status = okP && okE && okS && okR
-            ? ValidationStatus.Matched
-            : !okS ? ValidationStatus.SectionMismatch
-            : !okP ? ValidationStatus.PositionMismatch
-            : !okE ? ValidationStatus.ElevationMismatch
-            : ValidationStatus.RotationMismatch;
+        result.Status = okP && okE && okS && okR ? ValidationStatus.Matched : !okS ? ValidationStatus.SectionMismatch : !okP ? ValidationStatus.PositionMismatch : !okE ? ValidationStatus.ElevationMismatch : ValidationStatus.RotationMismatch;
         result.Severity = result.Status == ValidationStatus.Matched ? Severity.Info : Severity.Warning;
-        result.Confidence = Confidence(new[]
-        {
-            p / Safe(t.PositionToleranceMm),
-            z / Safe(t.ElevationToleranceMm),
-            SectionRatio(widthDelta, depthDelta, r, e, t.DimensionToleranceMm),
-            rot / Safe(t.AngleToleranceDegrees)
-        });
-        result.Message = result.Status == ValidationStatus.Matched
-            ? "Column correspondence confirmed by plan point; base/top elevation and orientation are within tolerance."
-            : $"{result.Status}: Δpos {p:F1} mm; Δelev {z:F1} mm; Δsection Width {widthDelta:F1} / Depth {depthDelta:F1} mm; Δrot {rot:F1}°.";
+        result.Confidence = Confidence(new[] { p / Safe(t.PositionToleranceMm), z / Safe(t.ElevationToleranceMm), SectionRatio(widthDelta, depthDelta, r, e, t.DimensionToleranceMm), rot / Safe(t.AngleToleranceDegrees) });
+        result.Message = result.Status == ValidationStatus.Matched ? "Column correspondence confirmed by plan point; base/top elevation and orientation are within tolerance." : $"{result.Status}: Δpos {p:F1} mm; Δelev {z:F1} mm; Δsection Width {widthDelta:F1} / Depth {depthDelta:F1} mm; Δrot {rot:F1}°.";
         AddDiffs(result);
         return result;
     }
@@ -329,13 +308,18 @@ public sealed class ModelComparer
         result.DepthDeltaMm = dd;
         result.LengthDeltaMm = g.LengthDelta;
         result.RotationDeltaDeg = g.AngleDelta;
-        result.Status = okP && okE && okL && okS && okR
+
+        // Beam identity is plan-line geometry. A different analytical/physical
+        // span length can be expected from end offsets, column-face vs column-center
+        // representation, or other analytical offsets. Therefore length is reported
+        // as a diagnostic but does not by itself invalidate correspondence.
+        result.Status = okP && okE && okS && okR
             ? ValidationStatus.Matched
             : !okS ? ValidationStatus.SectionMismatch
             : !okP ? ValidationStatus.PositionMismatch
             : !okE ? ValidationStatus.ElevationMismatch
-            : !okL ? ValidationStatus.GeometryMismatch
             : ValidationStatus.RotationMismatch;
+
         result.Severity = result.Status == ValidationStatus.Matched ? Severity.Info : Severity.Warning;
         result.Confidence = Confidence(new[]
         {
@@ -347,9 +331,10 @@ public sealed class ModelComparer
             SectionRatio(wd, dd, r, e, t.DimensionToleranceMm),
             g.AngleDelta / Safe(t.AngleToleranceDegrees)
         });
+
         result.Message = result.Status == ValidationStatus.Matched
-            ? $"Beam correspondence confirmed by plan line; line offset {g.LineOffset:F1} mm and {g.OverlapRatio:P0} overlap; elevation, length and section are within tolerance."
-            : $"{result.Status}: line offset {g.LineOffset:F1} mm; overlap {g.OverlapRatio:P0}; Δelev {g.EndpointElevationDeviation:F1} mm; ΔL {g.LengthDelta:F1} mm; Δsection {wd:F1}x{dd:F1} mm; Δrot {g.AngleDelta:F1}°.";
+            ? $"Beam correspondence confirmed by plan line; line offset {g.LineOffset:F1} mm and {g.OverlapRatio:P0} overlap. Span ΔL = {g.LengthDelta:F1} mm is reported diagnostically; elevation, section and direction are within tolerance."
+            : $"{result.Status}: line offset {g.LineOffset:F1} mm; overlap {g.OverlapRatio:P0}; Δelev {g.EndpointElevationDeviation:F1} mm; span ΔL {g.LengthDelta:F1} mm; Δsection {wd:F1}x{dd:F1} mm; Δrot {g.AngleDelta:F1}°.";
         AddDiffs(result);
         return result;
     }
@@ -366,7 +351,6 @@ public sealed class ModelComparer
         => UnknownSection(r, e) ? 0.0 : Math.Max(widthDelta, depthDelta) / Safe(tolerance);
 
     private static double Safe(double value) => Math.Max(Math.Abs(value), 1e-9);
-
     private static double Clamp01(double value) => value < 0.0 ? 0.0 : value > 1.0 ? 1.0 : value;
 
     private static ValidationResult Ambiguous(ElementBase r, ElementBase e, string type) => new()
