@@ -10,19 +10,18 @@ namespace RevitEtabsValidator.Core.Comparison;
 /// Columns are point-like objects in plan; beams are finite plan line segments.
 /// Revit uses Internal Origin coordinates and ETABS uses Global coordinates, both
 /// normalized to millimetres by their readers. The spatial index only reduces
-/// candidate work; the exact identity gates remain authoritative.
+/// candidate work; the exact geometry gates remain authoritative.
 ///
 /// Column elevation validation compares the Revit column midpoint Z to the ETABS
 /// column midpoint Z. Beam elevation validation is independent of beam identity
-/// and compares the Revit beam midpoint Z to the ETABS frame reference Z plus
-/// half the ETABS beam depth.
+/// and compares the Revit beam midpoint Z to the ETABS frame reference Z with the
+/// ETABS beam half-depth applied in either vertical direction (+D/2 or -D/2). The
+/// nearer convention is the one used for validation, so the tool does not assume
+/// a sign that may differ between analytical representations.
 /// </summary>
 public sealed class ModelComparer
 {
-    public ValidationReport CompareColumns(
-        IReadOnlyList<ColumnElement> revit,
-        IReadOnlyList<ColumnElement> etabs,
-        ValidationTolerance tol)
+    public ValidationReport CompareColumns(IReadOnlyList<ColumnElement> revit, IReadOnlyList<ColumnElement> etabs, ValidationTolerance tol)
     {
         var report = new ValidationReport();
         var remaining = new HashSet<string>(etabs.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
@@ -73,10 +72,7 @@ public sealed class ModelComparer
         return report;
     }
 
-    public ValidationReport CompareBeams(
-        IReadOnlyList<BeamElement> revit,
-        IReadOnlyList<BeamElement> etabs,
-        ValidationTolerance tol)
+    public ValidationReport CompareBeams(IReadOnlyList<BeamElement> revit, IReadOnlyList<BeamElement> etabs, ValidationTolerance tol)
     {
         var report = new ValidationReport();
         var remaining = new HashSet<string>(etabs.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
@@ -129,8 +125,7 @@ public sealed class ModelComparer
         return report;
     }
 
-    private static SpatialGridIndex<T> BuildIndex<T>(IReadOnlyList<T> values, ValidationTolerance tol)
-        where T : ElementBase
+    private static SpatialGridIndex<T> BuildIndex<T>(IReadOnlyList<T> values, ValidationTolerance tol) where T : ElementBase
     {
         var cellSize = Math.Max(500.0, Math.Max(tol.PositionToleranceMm, 1.0) * 8.0);
         var index = new SpatialGridIndex<T>(cellSize);
@@ -208,7 +203,7 @@ public sealed class ModelComparer
                 r.CenterPoint.PlanDistanceTo(e.CenterPoint),
                 0.0,
                 fallback,
-                Math.Abs((r.CenterPoint.Z + t.BeamZOffsetMm) - ExpectedRevitBeamMidpointZ(e)),
+                ExpectedRevitBeamMidpointElevationDelta(r, e, t),
                 Math.Max(
                     Math.Abs(r0.Z + t.BeamZOffsetMm - e0.Z),
                     Math.Abs(r1.Z + t.BeamZOffsetMm - e1.Z)),
@@ -253,22 +248,28 @@ public sealed class ModelComparer
             Math.Abs(r0.Z + t.BeamZOffsetMm - e1.Z),
             Math.Abs(r1.Z + t.BeamZOffsetMm - e0.Z));
         var endpointElevationDeviation = reversePlanMax < samePlanMax ? reverseElevMax : sameElevMax;
-        var expectedRevitMidpointElevationDelta = Math.Abs(
-            (r.CenterPoint.Z + t.BeamZOffsetMm) - ExpectedRevitBeamMidpointZ(e));
 
         return new BeamGeometryResult(
             lineOffset,
             midpointDeviation,
             overlapRatio,
             endpointPlanDeviation,
-            expectedRevitMidpointElevationDelta,
+            ExpectedRevitBeamMidpointElevationDelta(r, e, t),
             endpointElevationDeviation,
             Math.Abs(r.LengthMm - e.LengthMm),
             angleDelta);
     }
 
-    private static double ExpectedRevitBeamMidpointZ(BeamElement etabsBeam)
-        => etabsBeam.CenterPoint.Z + Math.Max(0.0, etabsBeam.Depth) / 2.0;
+    private static double ExpectedRevitBeamMidpointElevationDelta(BeamElement revitBeam, BeamElement etabsBeam, ValidationTolerance t)
+    {
+        var revitMidZ = revitBeam.CenterPoint.Z + t.BeamZOffsetMm;
+        var depth = Math.Max(0.0, etabsBeam.Depth) * 0.5;
+        var expectedPlus = etabsBeam.CenterPoint.Z + depth;
+        var expectedMinus = etabsBeam.CenterPoint.Z - depth;
+        return Math.Min(
+            Math.Abs(revitMidZ - expectedPlus),
+            Math.Abs(revitMidZ - expectedMinus));
+    }
 
     private static double PointToLineDistance(Point3D p, Point3D origin, double ux, double uy)
     {
