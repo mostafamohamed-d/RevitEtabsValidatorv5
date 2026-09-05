@@ -6,29 +6,29 @@ namespace RevitEtabsValidator.Core.Comparison;
 
 /// <summary>
 /// Geometry-first one-to-one correspondence engine.
-///
-/// Columns are point-like objects in plan. Their XY location establishes identity;
-/// base/top Z, section and rotation are validated after the counterpart is found.
-///
-/// Beams are finite plan line segments. Their plan-line direction, perpendicular
-/// offset and segment overlap establish identity. Endpoint extension/retraction,
-/// elevation, length and section are validated after the counterpart is found.
-///
-/// Coordinates are expected in millimetres. Revit uses its Internal Origin basis and
-/// ETABS uses its Global basis, with the two models intentionally compared in the
-/// same project XY coordinate system. Revit is converted from internal feet to mm
-/// by the reader and ETABS is read after SetPresentUnits(kN-mm-C).
+/// Columns are point-like objects in plan; beams are finite plan line segments.
+/// Revit uses Internal Origin coordinates and ETABS uses Global coordinates, both
+/// normalized to millimetres by their readers. The broad-phase spatial index only
+/// reduces candidate work; the exact identity gates below remain authoritative.
 /// </summary>
 public sealed class ModelComparer
 {
-    public ValidationReport CompareColumns(IReadOnlyList<ColumnElement> revit, IReadOnlyList<ColumnElement> etabs, ValidationTolerance tol)
+    public ValidationReport CompareColumns(
+        IReadOnlyList<ColumnElement> revit,
+        IReadOnlyList<ColumnElement> etabs,
+        ValidationTolerance tol)
     {
         var report = new ValidationReport();
         var remaining = new HashSet<string>(etabs.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
+        var index = BuildIndex(etabs, tol);
 
         var pending = revit.Select(r =>
         {
-            var candidates = etabs
+            var candidates = index.Query(
+                    r.CenterPoint.X - tol.PositionToleranceMm,
+                    r.CenterPoint.Y - tol.PositionToleranceMm,
+                    r.CenterPoint.X + tol.PositionToleranceMm,
+                    r.CenterPoint.Y + tol.PositionToleranceMm)
                 .Where(e => remaining.Contains(e.Id) && ColumnIdentityGate(r, e, tol))
                 .Select(e => (e, Score: ColumnScore(r, e, tol)))
                 .OrderBy(x => x.Score)
@@ -50,21 +50,10 @@ public sealed class ModelComparer
             }
 
             var best = candidates[0];
-            if (candidates.Count > 1 && Math.Abs(candidates[1].Score - best.Score) < Math.Max(0, tol.AmbiguousScoreGap))
+            if (candidates.Count > 1 &&
+                Math.Abs(candidates[1].Score - best.Score) < Math.Max(0, tol.AmbiguousScoreGap))
             {
-                report.Results.Add(new ValidationResult
-                {
-                    RevitElementId = item.r.Id,
-                    RevitName = item.r.Name,
-                    EtabsElementId = best.e.Id,
-                    EtabsName = best.e.Name,
-                    ElementType = "Column",
-                    StoryOrLevel = item.r.LevelName,
-                    Status = ValidationStatus.AmbiguousMatch,
-                    Severity = Severity.Error,
-                    Confidence = 0,
-                    Message = "Ambiguous column correspondence: two ETABS point candidates have nearly identical plan/location scores."
-                });
+                report.Results.Add(Ambiguous(item.r, best.e, "Column"));
                 continue;
             }
 
@@ -78,14 +67,24 @@ public sealed class ModelComparer
         return report;
     }
 
-    public ValidationReport CompareBeams(IReadOnlyList<BeamElement> revit, IReadOnlyList<BeamElement> etabs, ValidationTolerance tol)
+    public ValidationReport CompareBeams(
+        IReadOnlyList<BeamElement> revit,
+        IReadOnlyList<BeamElement> etabs,
+        ValidationTolerance tol)
     {
         var report = new ValidationReport();
         var remaining = new HashSet<string>(etabs.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
+        var index = BuildIndex(etabs, tol);
+        var expand = Math.Max(0.0, tol.PositionToleranceMm + tol.LengthToleranceMm);
 
         var pending = revit.Select(r =>
         {
-            var candidates = etabs
+            var minX = Math.Min(r.StartPoint.X, r.EndPoint.X) - expand;
+            var maxX = Math.Max(r.StartPoint.X, r.EndPoint.X) + expand;
+            var minY = Math.Min(r.StartPoint.Y, r.EndPoint.Y) - expand;
+            var maxY = Math.Max(r.StartPoint.Y, r.EndPoint.Y) + expand;
+
+            var candidates = index.Query(minX, minY, maxX, maxY)
                 .Where(e => remaining.Contains(e.Id) && BeamIdentityGate(r, e, tol))
                 .Select(e => (e, Score: BeamScore(r, e, tol)))
                 .OrderBy(x => x.Score)
@@ -107,21 +106,10 @@ public sealed class ModelComparer
             }
 
             var best = candidates[0];
-            if (candidates.Count > 1 && Math.Abs(candidates[1].Score - best.Score) < Math.Max(0, tol.AmbiguousScoreGap))
+            if (candidates.Count > 1 &&
+                Math.Abs(candidates[1].Score - best.Score) < Math.Max(0, tol.AmbiguousScoreGap))
             {
-                report.Results.Add(new ValidationResult
-                {
-                    RevitElementId = item.r.Id,
-                    RevitName = item.r.Name,
-                    EtabsElementId = best.e.Id,
-                    EtabsName = best.e.Name,
-                    ElementType = "Beam",
-                    StoryOrLevel = item.r.LevelName,
-                    Status = ValidationStatus.AmbiguousMatch,
-                    Severity = Severity.Error,
-                    Confidence = 0,
-                    Message = "Ambiguous beam correspondence: two ETABS line candidates have nearly identical plan-line scores."
-                });
+                report.Results.Add(Ambiguous(item.r, best.e, "Beam"));
                 continue;
             }
 
@@ -135,15 +123,21 @@ public sealed class ModelComparer
         return report;
     }
 
+    private static SpatialGridIndex<T> BuildIndex<T>(IReadOnlyList<T> values, ValidationTolerance tol)
+        where T : ElementBase
+    {
+        // 0.5 m cells are a good broad-phase compromise for structural grids.
+        // The exact geometry gate still enforces the user's configured tolerance.
+        var cellSize = Math.Max(500.0, Math.Max(tol.PositionToleranceMm, 1.0) * 8.0);
+        var index = new SpatialGridIndex<T>(cellSize);
+        foreach (var value in values)
+            index.Add(value);
+        return index;
+    }
+
     private static bool ColumnIdentityGate(ColumnElement r, ColumnElement e, ValidationTolerance t)
         => r.CenterPoint.PlanDistanceTo(e.CenterPoint) <= t.PositionToleranceMm;
 
-    /// <summary>
-    /// Beam identity is the plan line, not the exact end coordinates.
-    /// Direction must agree, the two finite segments must overlap materially,
-    /// and the symmetric endpoint-to-opposite-line offset must be within the
-    /// position tolerance. Beam Z and exact length are deliberately validated later.
-    /// </summary>
     private static bool BeamIdentityGate(BeamElement r, BeamElement e, ValidationTolerance t)
     {
         var g = Geometry(r, e, t);
@@ -158,7 +152,10 @@ public sealed class ModelComparer
         var baseDelta = Math.Abs((r.BaseElevation + t.ColumnZOffsetMm) - e.BaseElevation);
         var topDelta = Math.Abs((r.TopElevation + t.ColumnZOffsetMm) - e.TopElevation);
         var z = (baseDelta + topDelta) / (2.0 * Safe(t.ElevationToleranceMm));
-        var section = SectionPenalty(r.Width, r.Depth, e.Width, e.Depth, t.DimensionToleranceMm);
+        // Project rule: Revit b -> ETABS Depth, Revit h -> ETABS Width.
+        var widthDelta = Math.Abs(r.Depth - e.Width);
+        var depthDelta = Math.Abs(r.Width - e.Depth);
+        var section = SectionPenalty(widthDelta, depthDelta, t.DimensionToleranceMm);
         var rot = AngleMath.CircularDeltaDegrees(r.Rotation, e.Rotation, 180) / Safe(t.AngleToleranceDegrees);
         return 8.0 * plan + 1.5 * z + 1.0 * section + 0.25 * rot;
     }
@@ -172,7 +169,7 @@ public sealed class ModelComparer
         var z = g.EndpointElevationDeviation / Safe(t.ElevationToleranceMm);
         var len = g.LengthDelta / Safe(t.LengthToleranceMm);
         var angle = g.AngleDelta / Safe(t.AngleToleranceDegrees);
-        var section = SectionPenalty(r.Width, r.Depth, e.Width, e.Depth, t.DimensionToleranceMm);
+        var section = SectionPenalty(Math.Abs(r.Width - e.Width), Math.Abs(r.Depth - e.Depth), t.DimensionToleranceMm);
         return 8.0 * line + 2.0 * midpoint + 3.0 * overlap + 1.5 * z + 1.5 * len + 0.75 * angle + 0.5 * section;
     }
 
@@ -277,20 +274,21 @@ public sealed class ModelComparer
         var baseDelta = Math.Abs((r.BaseElevation + t.ColumnZOffsetMm) - e.BaseElevation);
         var topDelta = Math.Abs((r.TopElevation + t.ColumnZOffsetMm) - e.TopElevation);
         var z = Math.Max(baseDelta, topDelta);
-        var wd = Math.Abs(r.Width - e.Width);
-        var dd = Math.Abs(r.Depth - e.Depth);
+        // Project rule: Revit b -> ETABS Depth, Revit h -> ETABS Width.
+        var widthDelta = Math.Abs(r.Depth - e.Width);
+        var depthDelta = Math.Abs(r.Width - e.Depth);
         var rot = AngleMath.CircularDeltaDegrees(r.Rotation, e.Rotation, 180);
 
         var okP = p <= t.PositionToleranceMm;
         var okE = z <= t.ElevationToleranceMm;
-        var okS = UnknownSection(r, e) || (wd <= t.DimensionToleranceMm && dd <= t.DimensionToleranceMm);
+        var okS = UnknownSection(r, e) || (widthDelta <= t.DimensionToleranceMm && depthDelta <= t.DimensionToleranceMm);
         var okR = rot <= t.AngleToleranceDegrees;
 
         var result = Base(r, e, "Column");
         result.PositionDeltaMm = p;
         result.ElevationDeltaMm = z;
-        result.WidthDeltaMm = wd;
-        result.DepthDeltaMm = dd;
+        result.WidthDeltaMm = widthDelta;
+        result.DepthDeltaMm = depthDelta;
         result.RotationDeltaDeg = rot;
         result.Status = okP && okE && okS && okR
             ? ValidationStatus.Matched
@@ -303,12 +301,12 @@ public sealed class ModelComparer
         {
             p / Safe(t.PositionToleranceMm),
             z / Safe(t.ElevationToleranceMm),
-            SectionRatio(wd, dd, r, e, t.DimensionToleranceMm),
+            SectionRatio(widthDelta, depthDelta, r, e, t.DimensionToleranceMm),
             rot / Safe(t.AngleToleranceDegrees)
         });
         result.Message = result.Status == ValidationStatus.Matched
             ? "Column correspondence confirmed by plan point; base/top elevation and orientation are within tolerance."
-            : $"{result.Status}: Δpos {p:F1} mm; Δelev {z:F1} mm; Δsection {wd:F1}x{dd:F1} mm; Δrot {rot:F1}°.";
+            : $"{result.Status}: Δpos {p:F1} mm; Δelev {z:F1} mm; Δsection Width {widthDelta:F1} / Depth {depthDelta:F1} mm; Δrot {rot:F1}°.";
         AddDiffs(result);
         return result;
     }
@@ -350,7 +348,7 @@ public sealed class ModelComparer
             g.AngleDelta / Safe(t.AngleToleranceDegrees)
         });
         result.Message = result.Status == ValidationStatus.Matched
-            ? $"Beam correspondence confirmed by plan-line direction, {g.LineOffset:F1} mm line offset and {g.OverlapRatio:P0} overlap; elevation, length and section are within tolerance."
+            ? $"Beam correspondence confirmed by plan line; line offset {g.LineOffset:F1} mm and {g.OverlapRatio:P0} overlap; elevation, length and section are within tolerance."
             : $"{result.Status}: line offset {g.LineOffset:F1} mm; overlap {g.OverlapRatio:P0}; Δelev {g.EndpointElevationDeviation:F1} mm; ΔL {g.LengthDelta:F1} mm; Δsection {wd:F1}x{dd:F1} mm; Δrot {g.AngleDelta:F1}°.";
         AddDiffs(result);
         return result;
@@ -361,17 +359,29 @@ public sealed class ModelComparer
            (r is BeamElement rb && e is BeamElement eb && (rb.Width <= 0 || rb.Depth <= 0 || eb.Width <= 0 || eb.Depth <= 0)) ||
            (r is ColumnElement rc && e is ColumnElement ec && (rc.Width <= 0 || rc.Depth <= 0 || ec.Width <= 0 || ec.Depth <= 0));
 
-    private static double SectionPenalty(double rw, double rd, double ew, double ed, double tolerance)
-        => rw <= 0 || rd <= 0 || ew <= 0 || ed <= 0
-            ? 0.0
-            : (Math.Abs(rw - ew) + Math.Abs(rd - ed)) / (2 * Safe(tolerance));
+    private static double SectionPenalty(double widthDelta, double depthDelta, double tolerance)
+        => (widthDelta + depthDelta) / (2.0 * Safe(tolerance));
 
-    private static double SectionRatio(double dw, double dd, ElementBase r, ElementBase e, double tolerance)
-        => UnknownSection(r, e) ? 0.0 : Math.Max(dw, dd) / Safe(tolerance);
+    private static double SectionRatio(double widthDelta, double depthDelta, ElementBase r, ElementBase e, double tolerance)
+        => UnknownSection(r, e) ? 0.0 : Math.Max(widthDelta, depthDelta) / Safe(tolerance);
 
     private static double Safe(double value) => Math.Max(Math.Abs(value), 1e-9);
 
     private static double Clamp01(double value) => value < 0.0 ? 0.0 : value > 1.0 ? 1.0 : value;
+
+    private static ValidationResult Ambiguous(ElementBase r, ElementBase e, string type) => new()
+    {
+        RevitElementId = r.Id,
+        RevitName = r.Name,
+        EtabsElementId = e.Id,
+        EtabsName = e.Name,
+        ElementType = type,
+        StoryOrLevel = r.LevelName,
+        Status = ValidationStatus.AmbiguousMatch,
+        Severity = Severity.Error,
+        Confidence = 0,
+        Message = $"Ambiguous {type.ToLowerInvariant()} correspondence: more than one ETABS candidate has a nearly identical geometry score."
+    };
 
     private static ValidationResult MissingRevit(ElementBase r, string type) => new()
     {
