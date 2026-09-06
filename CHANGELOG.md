@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.0.5
+- Added: ETABS version support is no longer hardcoded to 21/22. New
+  `ETABS/EtabsInstallationScanner` scans every `ETABS <version>` folder under
+  Program Files (and the x86 equivalent) at runtime and loads the newest one
+  that actually contains `ETABSv1.dll`, instead of only looking for the exact
+  folder name matching the build's target framework. CSI keeps the handful
+  of OAPI members this project calls stable across releases, so one compiled
+  add-in now connects to ETABS 21, 22, 23, 24, or a future release without a
+  separate build per version. Both `ETABS/EtabsAssemblyResolver.cs` and
+  `Revit/Services/EtabsAssemblyResolver.cs` (the two independent runtime
+  resolvers) now use this. Covered by 6 new regression tests in
+  `Tests/RevitEtabsValidator.Core.Tests` (version picking, missing-DLL
+  fallback, no-install case, and folder-name parsing).
+- Added: **Connect ETABS** now enumerates every running ETABS instance via
+  the Windows COM Running Object Table before connecting. Zero found falls
+  back to the previous single-instance behavior; exactly one connects
+  directly; more than one shows a new `EtabsInstancePickerWindow` so you
+  choose which instance to attach to, instead of the tool silently grabbing
+  whichever one plain `GetActiveObject` would have returned.
+- Added: **Beam Z-Offset** and **Column Z-Offset** tolerance fields in the UI
+  (previously `ValidationTolerance.BeamZOffsetMm`/`ColumnZOffsetMm` existed
+  in `Core/` but had no UI control, so they were always 0 and unreachable by
+  users). A systematic ΔElev that repeats across most/all members of one
+  type is almost always a Revit/ETABS modeling-datum difference, not N real
+  errors - these fields cancel it out. The "Why?" panel for an
+  ElevationMismatch now also states the tolerance and offset that were
+  actually applied, and Position/Section/Rotation mismatches likewise now
+  show their applied tolerance.
+- Added: the floor plan now colors a mismatched member by *which* check
+  failed (gold = position, crimson = elevation, purple = section, teal =
+  rotation, pink = ambiguous, black = missing counterpart) instead of a
+  single generic red, with a matching legend in the plan view. Hovering a
+  member's tooltip also now names its status, not just its name/ID.
+
 ## 1.0.4
 - Redesigned `Revit/UI/MainWindow.xaml`: consistent card-based layout, a
   proper button/text-box style system (rounded corners, hover/press

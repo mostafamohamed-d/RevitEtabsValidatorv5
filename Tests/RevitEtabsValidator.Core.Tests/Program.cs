@@ -6,6 +6,7 @@ using RevitEtabsValidator.Core.Comparison;
 using RevitEtabsValidator.Core.Geometry;
 using RevitEtabsValidator.Core.Models;
 using RevitEtabsValidator.Core.Validation;
+using RevitEtabsValidator.ETABS;
 
 int failures = 0;
 int passed = 0;
@@ -205,6 +206,63 @@ var comparer = new ModelComparer();
     var report = comparer.CompareColumns(new[] { r }, new[] { e }, tol);
     var res = report.Results.FirstOrDefault(x => x.RevitElementId == "R7");
     Check("Column with zero/unknown section dims -> Matched (section check skipped)", res?.Status == ValidationStatus.Matched, res?.Status.ToString() ?? "null");
+}
+
+// 14. EtabsInstallationScanner: any installed ETABS version should be usable, not
+//     just a hardcoded one. Simulate two Program Files roots holding ETABS 21 and
+//     ETABS 24 and confirm the newest (24) wins even though 21 sorts first.
+// Paths are built via Path.Combine throughout (not backslash literals) so this test
+// is correct regardless of the host OS's directory separator.
+{
+    var progFiles = Path.Combine("fakeroot", "Program Files");
+    var progFilesX86 = Path.Combine("fakeroot", "Program Files (x86)");
+    var csiRoot = Path.Combine(progFiles, "Computers and Structures");
+    var csiRootX86 = Path.Combine(progFilesX86, "Computers and Structures");
+
+    var fakeFs = new Dictionary<string, string[]>
+    {
+        [csiRoot] = new[] { "ETABS 21", "ETABS 24" },
+        [csiRootX86] = Array.Empty<string>()
+    };
+    string[] Dirs(string root) => (fakeFs.TryGetValue(root, out var names) ? names : Array.Empty<string>())
+        .Select(n => Path.Combine(root, n)).ToArray();
+    bool DirExists(string p) => fakeFs.ContainsKey(p);
+    bool FileExists(string dllPath) => true; // every simulated version folder "has" ETABSv1.dll
+
+    var roots = new[] { progFiles, progFilesX86 };
+    var result = EtabsInstallationScanner.FindNewestApiDll(roots, DirExists, Dirs, FileExists);
+    Check("EtabsInstallationScanner picks the newest of multiple installed versions",
+        result == Path.Combine(csiRoot, "ETABS 24", "ETABSv1.dll"),
+        result ?? "null");
+}
+
+// 15. EtabsInstallationScanner: a version folder without ETABSv1.dll actually present
+//     (a partial/broken install) must be skipped in favor of one that has it.
+{
+    var progFiles = Path.Combine("fakeroot", "Program Files");
+    var csiRoot = Path.Combine(progFiles, "Computers and Structures");
+    var names = new[] { "ETABS 21", "ETABS 24" };
+    string[] Dirs(string root) => names.Select(n => Path.Combine(root, n)).ToArray();
+    bool DirExists(string p) => p == csiRoot;
+    bool FileExists(string dllPath) => !dllPath.Contains("ETABS 24"); // 24's dll is "missing"
+
+    var result = EtabsInstallationScanner.FindNewestApiDll(new[] { progFiles }, DirExists, Dirs, FileExists);
+    Check("EtabsInstallationScanner skips a version folder with no ETABSv1.dll present",
+        result == Path.Combine(csiRoot, "ETABS 21", "ETABSv1.dll"), result ?? "null");
+}
+
+// 16. EtabsInstallationScanner: nothing installed anywhere -> null, not an exception.
+{
+    var progFiles = Path.Combine("fakeroot", "Program Files");
+    var result = EtabsInstallationScanner.FindNewestApiDll(new[] { progFiles }, _ => false, _ => Array.Empty<string>(), _ => false);
+    Check("EtabsInstallationScanner returns null when no ETABS install is found", result is null, result ?? "non-null");
+}
+
+// 17. ParseVersion pulls the version number out of names CSI's installer uses.
+{
+    Check("ParseVersion('ETABS 22') -> 22", EtabsInstallationScanner.ParseVersion("ETABS 22") == 22);
+    Check("ParseVersion('ETABS 22 Ultimate') -> 22", EtabsInstallationScanner.ParseVersion("ETABS 22 Ultimate") == 22);
+    Check("ParseVersion('ETABS') -> 0 (no digits, safe fallback)", EtabsInstallationScanner.ParseVersion("ETABS") == 0);
 }
 
 Console.WriteLine();

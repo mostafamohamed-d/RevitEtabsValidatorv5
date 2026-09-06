@@ -208,28 +208,44 @@
         <!-- Tolerances -->
         <Border Grid.Row="2" Style="{StaticResource CardStyle}" Padding="14,10" Margin="0,0,0,10">
             <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="60"/>
-                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="60"/>
-                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="60"/>
-                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="60"/>
-                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="60"/>
-                    <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock Text="Position ±" VerticalAlignment="Center" Foreground="{StaticResource TextPrimaryBrush}"/>
-                <TextBox x:Name="PositionTol" Text="25" Width="52" Grid.Column="1" Margin="6,0,14,0" Style="{StaticResource ToleranceTextBoxStyle}"/>
-                <TextBlock Text="Elevation ±" Grid.Column="2" VerticalAlignment="Center" Foreground="{StaticResource TextPrimaryBrush}"/>
-                <TextBox x:Name="ElevationTol" Text="25" Width="52" Grid.Column="3" Margin="6,0,14,0" Style="{StaticResource ToleranceTextBoxStyle}"/>
-                <TextBlock Text="Section ±" Grid.Column="4" VerticalAlignment="Center" Foreground="{StaticResource TextPrimaryBrush}"/>
-                <TextBox x:Name="SectionTol" Text="5" Width="52" Grid.Column="5" Margin="6,0,14,0" Style="{StaticResource ToleranceTextBoxStyle}"/>
-                <TextBlock Text="Length ±" Grid.Column="6" VerticalAlignment="Center" Foreground="{StaticResource TextPrimaryBrush}"/>
-                <TextBox x:Name="LengthTol" Text="25" Width="52" Grid.Column="7" Margin="6,0,14,0" Style="{StaticResource ToleranceTextBoxStyle}"/>
-                <TextBlock Text="Angle ±" Grid.Column="8" VerticalAlignment="Center" Foreground="{StaticResource TextPrimaryBrush}"/>
-                <TextBox x:Name="AngleTol" Text="1" Width="52" Grid.Column="9" Margin="6,0,14,0" Style="{StaticResource ToleranceTextBoxStyle}"/>
-                <TextBlock Text="mm / deg" Grid.Column="10" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center"/>
-                <Border Grid.Column="11" Background="#EEF2F7" BorderBrush="{StaticResource BorderColorBrush}" BorderThickness="1" CornerRadius="14" Padding="12,6">
-                    <TextBlock x:Name="ScopeText" Text="Scope: all floors" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}"/>
-                </Border>
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="60"/>
+                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="60"/>
+                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="60"/>
+                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="60"/>
+                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="60"/>
+                        <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Position ±" VerticalAlignment="Center" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <TextBox x:Name="PositionTol" Text="25" Width="52" Grid.Column="1" Margin="6,0,14,0" Style="{StaticResource ToleranceTextBoxStyle}"/>
+                    <TextBlock Text="Elevation ±" Grid.Column="2" VerticalAlignment="Center" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <TextBox x:Name="ElevationTol" Text="25" Width="52" Grid.Column="3" Margin="6,0,14,0" Style="{StaticResource ToleranceTextBoxStyle}"/>
+                    <TextBlock Text="Section ±" Grid.Column="4" VerticalAlignment="Center" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <TextBox x:Name="SectionTol" Text="5" Width="52" Grid.Column="5" Margin="6,0,14,0" Style="{StaticResource ToleranceTextBoxStyle}"/>
+                    <TextBlock Text="Length ±" Grid.Column="6" VerticalAlignment="Center" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <TextBox x:Name="LengthTol" Text="25" Width="52" Grid.Column="7" Margin="6,0,14,0" Style="{StaticResource ToleranceTextBoxStyle}"/>
+                    <TextBlock Text="Angle ±" Grid.Column="8" VerticalAlignment="Center" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <TextBox x:Name="AngleTol" Text="1" Width="52" Grid.Column="9" Margin="6,0,14,0" Style="{StaticResource ToleranceTextBoxStyle}"/>
+                    <TextBlock Text="mm / deg" Grid.Column="10" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center"/>
+                    <Border Grid.Column="11" Background="#EEF2F7" BorderBrush="{StaticResource BorderColorBrush}" BorderThickness="1" CornerRadius="14" Padding="12,6">
+                        <TextBlock x:Name="ScopeText" Text="Scope: all floors" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}"/>
+                    </Border>
+                </Grid>
+                <Grid Grid.Row="1" Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="70"/>
+                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="70"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Beam Z-Offset" VerticalAlignment="Center" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <TextBox x:Name="BeamZOffsetTol" Text="0" Width="62" Grid.Column="1" Margin="6,0,18,0" Style="{StaticResource ToleranceTextBoxStyle}"/>
+                    <TextBlock Text="Column Z-Offset" Grid.Column="2" VerticalAlignment="Center" Foreground="{StaticResource TextPrimaryBrush}"/>
+                    <TextBox x:Name="ColumnZOffsetTol" Text="0" Width="62" Grid.Column="3" Margin="6,0,18,0" Style="{StaticResource ToleranceTextBoxStyle}"/>
+                    <TextBlock Grid.Column="4" TextWrapping="Wrap" VerticalAlignment="Center" FontSize="11" Foreground="{StaticResource TextMutedBrush}"
+                               Text="Signed mm correction for a systematic Revit/ETABS elevation datum difference. Leave at 0 unless the same ΔElev repeats across most/all members of that type - then set it to cancel that offset, not the per-tolerance fields above."/>
+                </Grid>
             </Grid>
         </Border>
 
@@ -344,10 +360,29 @@
                         <Button Content="+" Width="32" Style="{StaticResource CompactButtonStyle}" Margin="0,0,6,0" Click="ZoomIn_Click"/>
                         <Border Background="White" BorderBrush="{StaticResource BorderColorBrush}" BorderThickness="1" Padding="9,5" CornerRadius="4"><TextBlock x:Name="ZoomText" Text="100%" FontSize="12"/></Border>
                     </StackPanel>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12" Panel.ZIndex="5">
-                        <Border Background="White" BorderBrush="{StaticResource BorderColorBrush}" BorderThickness="1" CornerRadius="4" Padding="9,6" Margin="0,0,6,0"><TextBlock FontSize="12"><Run Text="Revit" FontWeight="Bold"/><Run Text="  ━"/></TextBlock></Border>
-                        <Border Background="White" BorderBrush="{StaticResource BorderColorBrush}" BorderThickness="1" CornerRadius="4" Padding="9,6" Margin="0,0,6,0"><TextBlock FontSize="12"><Run Text="ETABS" FontWeight="Bold"/><Run Text="  ┄"/></TextBlock></Border>
-                        <Border Background="White" BorderBrush="{StaticResource BorderColorBrush}" BorderThickness="1" CornerRadius="4" Padding="9,6"><TextBlock FontSize="12" Foreground="{StaticResource DangerBrush}"><Run Text="Mismatch" FontWeight="Bold"/><Run Text="  red"/></TextBlock></Border>
+                    <StackPanel HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12" Panel.ZIndex="5">
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                            <Border Background="White" BorderBrush="{StaticResource BorderColorBrush}" BorderThickness="1" CornerRadius="4" Padding="9,6" Margin="0,0,6,0"><TextBlock FontSize="12"><Run Text="Revit" FontWeight="Bold"/><Run Text="  ━"/></TextBlock></Border>
+                            <Border Background="White" BorderBrush="{StaticResource BorderColorBrush}" BorderThickness="1" CornerRadius="4" Padding="9,6"><TextBlock FontSize="12"><Run Text="ETABS" FontWeight="Bold"/><Run Text="  ┄"/></TextBlock></Border>
+                        </StackPanel>
+                        <Border Background="White" BorderBrush="{StaticResource BorderColorBrush}" BorderThickness="1" CornerRadius="4" Padding="9,6">
+                            <!-- Colors here must match MainWindow.xaml.cs's StatusBrush, which paints
+                                 the actual plan visuals by mismatch type. -->
+                            <StackPanel Orientation="Horizontal">
+                                <Ellipse Width="8" Height="8" Fill="Gold" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBlock Text="Position" FontSize="11" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                <Ellipse Width="8" Height="8" Fill="Crimson" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBlock Text="Elevation" FontSize="11" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                <Ellipse Width="8" Height="8" Fill="MediumPurple" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBlock Text="Section" FontSize="11" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                <Ellipse Width="8" Height="8" Fill="Teal" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBlock Text="Rotation" FontSize="11" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                <Ellipse Width="8" Height="8" Fill="DeepPink" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBlock Text="Ambiguous" FontSize="11" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                <Ellipse Width="8" Height="8" Fill="Black" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBlock Text="Missing counterpart" FontSize="11" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </Grid>
             </Border>

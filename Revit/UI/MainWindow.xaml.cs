@@ -36,6 +36,7 @@ public partial class MainWindow : Window
     private ValidationReport _columnReport = new();
     private ValidationReport _beamReport = new();
     private List<ValidationResult> _all = new();
+    private ValidationTolerance _lastTolerance = new();
     private readonly ObservableCollection<ValidationResult> _floorVisible = new();
     private ValidationResult? _selected;
     private bool _validationPending;
@@ -139,7 +140,33 @@ public partial class MainWindow : Window
     {
         try
         {
-            var ok = _etabs.ConnectRunning();
+            // Enumerate every running ETABS process first so multiple open instances
+            // can be offered as a choice instead of silently attaching to whichever
+            // one plain GetActiveObject would have returned. Falls back to the
+            // original single-instance ConnectRunning() path if enumeration finds
+            // nothing (COM enumeration is best-effort - see ListRunningInstances).
+            var running = _etabs.ListRunningInstances();
+            bool ok;
+
+            if (running.Count > 1)
+            {
+                var picker = new EtabsInstancePickerWindow(running) { Owner = this };
+                if (picker.ShowDialog() != true || picker.Selected == null)
+                {
+                    SetStatus("ETABS connection cancelled: choose one of the running instances to connect.");
+                    return;
+                }
+                ok = _etabs.ConnectTo(picker.Selected);
+            }
+            else if (running.Count == 1)
+            {
+                ok = _etabs.ConnectTo(running[0]);
+            }
+            else
+            {
+                ok = _etabs.ConnectRunning();
+            }
+
             if (!ok && StartEtabs.IsChecked == true)
                 ok = _etabs.StartAndConnect();
 
@@ -210,11 +237,19 @@ public partial class MainWindow : Window
         ElevationToleranceMm = Read(ElevationTol, 25),
         DimensionToleranceMm = Read(SectionTol, 5),
         LengthToleranceMm = Read(LengthTol, 25),
-        AngleToleranceDegrees = Read(AngleTol, 1)
+        AngleToleranceDegrees = Read(AngleTol, 1),
+        // Unlike the tolerances above, these are signed systematic corrections
+        // (e.g. ETABS models the beam centerline at a different datum than Revit's
+        // reference level), so they must accept negative values - ReadSigned, not Read.
+        BeamZOffsetMm = ReadSigned(BeamZOffsetTol, 0),
+        ColumnZOffsetMm = ReadSigned(ColumnZOffsetTol, 0)
     };
 
     private static double Read(WpfTextBox b, double d) =>
         double.TryParse(b.Text, out var v) && v >= 0 ? v : d;
+
+    private static double ReadSigned(WpfTextBox b, double d) =>
+        double.TryParse(b.Text, out var v) ? v : d;
 
     private void RunValidation_Click(object s, RoutedEventArgs e)
     {
@@ -282,6 +317,7 @@ public partial class MainWindow : Window
                 : _etabsBeams;
 
             var t = Tol();
+            _lastTolerance = t;
             var cmp = new ModelComparer();
             _columnReport = cmp.CompareColumns(revitColumns, etabsColumns, t);
             _beamReport = cmp.CompareBeams(revitBeams, etabsBeams, t);
@@ -553,22 +589,38 @@ public partial class MainWindow : Window
         _planHasContent = true;
     }
 
+    // One color per mismatch type (not just a single generic "problem" color) so a
+    // glance at the plan tells you WHAT kind of coordination issue a member has,
+    // matching the same legend shown in the plan view's bottom-left corner.
+    private static Brush StatusBrush(ValidationStatus status) => status switch
+    {
+        ValidationStatus.PositionMismatch => Brushes.Gold,
+        ValidationStatus.ElevationMismatch => Brushes.Crimson,
+        ValidationStatus.SectionMismatch => Brushes.MediumPurple,
+        ValidationStatus.RotationMismatch => Brushes.Teal,
+        ValidationStatus.AmbiguousMatch => Brushes.DeepPink,
+        ValidationStatus.MissingInRevit or ValidationStatus.MissingInEtabs => Brushes.Black,
+        _ => Brushes.Crimson
+    };
+
     private void AddBeamVisual(BeamElement beam, bool etabs, Point a, Point b)
     {
+        var result = FindResultForPair(beam.Id, etabs);
+        var problem = result != null && result.Status != ValidationStatus.Matched;
         var line = new Line
         {
             X1 = a.X,
             Y1 = a.Y,
             X2 = b.X,
             Y2 = b.Y,
-            Stroke = etabs ? Brushes.SlateGray : Brushes.SteelBlue,
-            StrokeThickness = etabs ? 2.0 : 3.0,
+            Stroke = problem ? StatusBrush(result!.Status) : (etabs ? Brushes.SlateGray : Brushes.SteelBlue),
+            StrokeThickness = problem ? 3.5 : (etabs ? 2.0 : 3.0),
             Opacity = 0.9,
-            Tag = FindResultForPair(beam.Id, etabs)
+            Tag = result
         };
         if (etabs)
             line.StrokeDashArray = new DoubleCollection { 7, 5 };
-        AttachVisual(line, beam.Name, etabs, beam.Id);
+        AttachVisual(line, beam.Name, etabs, beam.Id, result);
         PlanCanvas.Children.Add(line);
     }
 
@@ -577,25 +629,27 @@ public partial class MainWindow : Window
         const double radius = 6;
         var result = FindResultForPair(column.Id, etabs);
         var problem = result != null && result.Status != ValidationStatus.Matched;
+        var problemBrush = problem ? StatusBrush(result!.Status) : null;
         var ellipse = new Ellipse
         {
             Width = radius * 2,
             Height = radius * 2,
-            Stroke = problem ? Brushes.Red : (etabs ? Brushes.DarkOrange : Brushes.SteelBlue),
+            Stroke = problemBrush ?? (etabs ? Brushes.DarkOrange : Brushes.SteelBlue),
             Fill = etabs ? Brushes.Transparent : (problem ? Brushes.MistyRose : Brushes.LightSteelBlue),
-            StrokeThickness = 2,
+            StrokeThickness = problem ? 3 : 2,
             Tag = result
         };
         Canvas.SetLeft(ellipse, p.X - radius);
         Canvas.SetTop(ellipse, p.Y - radius);
-        AttachVisual(ellipse, column.Name, etabs, column.Id);
+        AttachVisual(ellipse, column.Name, etabs, column.Id, result);
         PlanCanvas.Children.Add(ellipse);
     }
 
-    private void AttachVisual(FrameworkElement element, string name, bool etabs, string id)
+    private void AttachVisual(FrameworkElement element, string name, bool etabs, string id, ValidationResult? result)
     {
         element.Cursor = Cursors.Hand;
-        element.ToolTip = etabs ? $"ETABS: {name}\nID: {id}\nClick for coordination details" : $"Revit: {name}\nID: {id}\nClick for coordination details";
+        var statusNote = result != null && result.Status != ValidationStatus.Matched ? $"\n{result.Status}" : "";
+        element.ToolTip = etabs ? $"ETABS: {name}\nID: {id}{statusNote}\nClick for coordination details" : $"Revit: {name}\nID: {id}{statusNote}\nClick for coordination details";
         element.MouseLeftButtonDown += PlanVisual_Click;
     }
 
@@ -673,8 +727,12 @@ public partial class MainWindow : Window
         return $"Mid: X {c.X:F1}, Y {c.Y:F1}, Z {c.Z:F1} mm\nA:   X {element.StartPoint.X:F1}, Y {element.StartPoint.Y:F1}, Z {element.StartPoint.Z:F1} mm\nB:   X {element.EndPoint.X:F1}, Y {element.EndPoint.Y:F1}, Z {element.EndPoint.Z:F1} mm";
     }
 
-    private static string BuildReason(ValidationResult result, ElementBase? revit, ElementBase? etabs)
+    // Instance method (not static) so it can report the tolerances/offsets that were
+    // actually in effect for the run that produced this result (_lastTolerance),
+    // which is what a user needs to answer "why does this show a mismatch".
+    private string BuildReason(ValidationResult result, ElementBase? revit, ElementBase? etabs)
     {
+        var t = _lastTolerance;
         if (result.Status == ValidationStatus.Matched)
             return "Matched: the plan geometry correspondence was established and all required validation checks are within the configured tolerances. Span-length difference is shown only as a diagnostic for analytical/physical end offsets.";
         if (result.Status == ValidationStatus.MissingInEtabs)
@@ -682,11 +740,19 @@ public partial class MainWindow : Window
         if (result.Status == ValidationStatus.MissingInRevit)
             return "Missing in Revit: the ETABS member did not find a valid Revit counterpart through the plan-geometry identity gate.";
         if (result.Status == ValidationStatus.SectionMismatch)
-            return $"Section mismatch. Revit = {FormatSection(revit, false)}; ETABS = {FormatSection(etabs, true)}.";
+            return $"Section mismatch (tolerance ±{t.DimensionToleranceMm:F0} mm). Revit = {FormatSection(revit, false)}; ETABS = {FormatSection(etabs, true)}.";
         if (result.Status == ValidationStatus.PositionMismatch)
-            return $"Position mismatch. Revit location = {FormatLocation(revit)}; ETABS location = {FormatLocation(etabs)}.";
+            return $"Position mismatch: {result.PositionDeltaMm:F1} mm (tolerance ±{t.PositionToleranceMm:F0} mm). Revit location = {FormatLocation(revit)}; ETABS location = {FormatLocation(etabs)}.";
+        if (result.Status == ValidationStatus.RotationMismatch)
+            return $"Rotation mismatch: {result.RotationDeltaDeg:F1}° (tolerance ±{t.AngleToleranceDegrees:F1}°).";
         if (result.Status == ValidationStatus.ElevationMismatch)
-            return $"Elevation mismatch. The compared elevation difference is {result.ElevationDeltaMm:F1} mm. See the two model locations below for the actual Z values.";
+        {
+            var offset = result.ElementType == "Beam" ? t.BeamZOffsetMm : t.ColumnZOffsetMm;
+            var offsetNote = offset == 0
+                ? $"No {result.ElementType} Z-Offset correction is currently configured."
+                : $"A {offset:+0.#;-0.#;0} mm {result.ElementType} Z-Offset correction is currently applied.";
+            return $"Elevation mismatch: {result.ElevationDeltaMm:F1} mm (tolerance ±{t.ElevationToleranceMm:F0} mm). {offsetNote} If this same delta repeats across most/all members of this type, it is usually a systematic modeling-datum difference between Revit and ETABS rather than N separate errors - adjust the {result.ElementType} Z-Offset field in the tolerance bar to correct for it, then re-run. See the two model locations below for the actual Z values.";
+        }
         return result.Message;
     }
 

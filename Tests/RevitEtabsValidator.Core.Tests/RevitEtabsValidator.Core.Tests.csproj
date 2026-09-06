@@ -17,6 +17,9 @@
          Windows Desktop workload or the Revit/ETABS reference assemblies that
          the main RevitEtabsValidator.csproj requires. -->
     <Compile Include="../../Core/**/*.cs" />
+    <!-- Pure folder-scanning/version-picking logic, no ETABSv1 or Windows-only
+         dependency - see EtabsInstallationScanner's own doc comment. -->
+    <Compile Include="../../ETABS/EtabsInstallationScanner.cs" />
     <Compile Include="Program.cs" />
   </ItemGroup>
 </Project>
