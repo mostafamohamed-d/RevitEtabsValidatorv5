@@ -42,21 +42,21 @@
 
   <ItemGroup Condition="'$(TargetFramework)'=='net48'">
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
+
+    <Reference Include="ETABSv1">
+      <HintPath>$(EtabsInstallPath)\ETABSv1.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="RevitAPI">
+      <HintPath>$(RevitInstallPath)\RevitAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RevitAPIUI">
+      <HintPath>$(RevitInstallPath)\RevitAPIUI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
-  <ItemGroup>
-    <Compile Include="Core\**\*.cs" />
-    <Compile Include="ETABS\**\*.cs" />
-    <Compile Include="Revit\**\*.cs" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Page Include="Revit\UI\*.xaml" />
-  </ItemGroup>
-
-  <!-- Revit 2024 + ETABS 21 -->
-
-  <!-- Revit 2025 + ETABS 22 -->
   <ItemGroup Condition="'$(TargetFramework)'=='net8.0-windows'">
     <Reference Include="ETABSv1">
       <HintPath>$(EtabsInstallPath)\ETABSv1.dll</HintPath>
@@ -71,16 +71,15 @@
       <Private>false</Private>
     </Reference>
   </ItemGroup>
+
   <ItemGroup>
-    <Reference Include="ETABSv1">
-      <HintPath>..\..\..\..\..\Program Files\Computers and Structures\ETABS 21\ETABSv1.dll</HintPath>
-    </Reference>
-    <Reference Include="RevitAPI">
-      <HintPath>..\..\..\..\..\Program Files\Autodesk\Revit 2024\RevitAPI.dll</HintPath>
-    </Reference>
-    <Reference Include="RevitAPIUI">
-      <HintPath>..\..\..\..\..\Program Files\Autodesk\Revit 2024\RevitAPIUI.dll</HintPath>
-    </Reference>
+    <Compile Include="Core\**\*.cs" />
+    <Compile Include="ETABS\**\*.cs" />
+    <Compile Include="Revit\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Page Include="Revit\UI\*.xaml" />
   </ItemGroup>
 
   <PropertyGroup>
