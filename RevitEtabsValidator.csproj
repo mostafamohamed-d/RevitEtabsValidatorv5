@@ -1,9 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <!--
-      Default development target on current machines is Revit 2025 + ETABS 22.
-      Set -p:BuildLegacy=true when a legacy Revit 2024 + ETABS 21 build is required.
-    -->
     <TargetFrameworks Condition="'$(BuildLegacy)'!='true'">net8.0-windows</TargetFrameworks>
     <TargetFrameworks Condition="'$(BuildLegacy)'=='true'">net48;net8.0-windows</TargetFrameworks>
     <UseWPF>true</UseWPF>
@@ -27,8 +23,7 @@
     <RevitVersion Condition="'$(RevitVersion)'==''">2024</RevitVersion>
     <EtabsVersion Condition="'$(EtabsVersion)'==''">21</EtabsVersion>
     <RevitInstallPath Condition="'$(RevitInstallPath)'==''">$(ProgramFiles)\Autodesk\Revit 2024</RevitInstallPath>
-    <EtabsInstallPath Condition="Exists('$(ProgramFiles)\Computers and Structures\ETABS 21')">$(ProgramFiles)\Computers and Structures\ETABS 21</EtabsInstallPath>
-    <EtabsInstallPath Condition="'$(EtabsInstallPath)'=='' And Exists('$(ProgramFiles(x86))\Computers and Structures\ETABS 21')">$(ProgramFiles(x86))\Computers and Structures\ETABS 21</EtabsInstallPath>
+    <EtabsInstallPath Condition="'$(EtabsInstallPath)'==''">$(ProgramFiles)\Computers and Structures\ETABS 21</EtabsInstallPath>
     <StartProgram>$(RevitInstallPath)\Revit.exe</StartProgram>
     <AssemblyTitle>Revit 2024 ↔ ETABS 21 Structural Model Validator</AssemblyTitle>
     <DefineConstants>$(DefineConstants);REVIT2024;ETABS21</DefineConstants>
@@ -38,19 +33,18 @@
     <RevitVersion Condition="'$(RevitVersion)'==''">2025</RevitVersion>
     <EtabsVersion Condition="'$(EtabsVersion)'==''">22</EtabsVersion>
     <RevitInstallPath Condition="'$(RevitInstallPath)'==''">$(ProgramFiles)\Autodesk\Revit 2025</RevitInstallPath>
-    <EtabsInstallPath Condition="Exists('$(ProgramFiles)\Computers and Structures\ETABS 22')">$(ProgramFiles)\Computers and Structures\ETABS 22</EtabsInstallPath>
-    <EtabsInstallPath Condition="'$(EtabsInstallPath)'=='' And Exists('$(ProgramFiles(x86))\Computers and Structures\ETABS 22')">$(ProgramFiles(x86))\Computers and Structures\ETABS 22</EtabsInstallPath>
+    <EtabsInstallPath Condition="'$(EtabsInstallPath)'==''">$(ProgramFiles)\Computers and Structures\ETABS 22</EtabsInstallPath>
     <StartProgram>$(RevitInstallPath)\Revit.exe</StartProgram>
     <AssemblyTitle>Revit 2025 ↔ ETABS 22 Structural Model Validator</AssemblyTitle>
     <DefineConstants>$(DefineConstants);REVIT2025;ETABS22</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(TargetFramework)'=='net48'">
-    <PackageReference Include="System.Text.Json" Version="8.0.5" />
     <Reference Include="ETABSv1">
       <HintPath>$(EtabsInstallPath)\ETABSv1.dll</HintPath>
-      <Private>true</Private>
+      <Private>false</Private>
     </Reference>
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
     <Reference Include="RevitAPI">
       <HintPath>$(RevitInstallPath)\RevitAPI.dll</HintPath>
       <Private>false</Private>
@@ -64,7 +58,7 @@
   <ItemGroup Condition="'$(TargetFramework)'=='net8.0-windows'">
     <Reference Include="ETABSv1">
       <HintPath>$(EtabsInstallPath)\ETABSv1.dll</HintPath>
-      <Private>true</Private>
+      <Private>false</Private>
     </Reference>
     <Reference Include="RevitAPI">
       <HintPath>$(RevitInstallPath)\RevitAPI.dll</HintPath>
