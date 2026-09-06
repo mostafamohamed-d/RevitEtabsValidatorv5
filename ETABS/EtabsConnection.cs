@@ -1,10 +1,17 @@
 using ETABSv1;
+using System.Runtime.InteropServices;
 
 namespace RevitEtabsValidator.ETABS;
 
 public sealed class EtabsConnection
 {
     private const string EtabsObjectProgId = "CSI.ETABS.API.ETABSObject";
+
+    [DllImport("oleaut32.dll", ExactSpelling = true, PreserveSig = true)]
+    private static extern int GetActiveObject(
+        ref Guid rclsid,
+        IntPtr reserved,
+        [MarshalAs(UnmanagedType.Interface)] out object ppunk);
 
     public cOAPI? EtabsObject { get; private set; }
     public cSapModel? SapModel => EtabsObject?.SapModel;
@@ -17,23 +24,43 @@ public sealed class EtabsConnection
 
         try
         {
-            // CSI's documented ETABS v1 connection pattern:
-            // create the typed Helper, then get the active running ETABS OAPI object.
-            cHelper helper = new Helper();
-            EtabsObject = helper.GetObject(EtabsObjectProgId);
+            var comType = Type.GetTypeFromProgID(EtabsObjectProgId, throwOnError: false);
 
-            if (EtabsObject != null && EtabsObject.SapModel != null)
+            if (comType == null)
             {
-                Message = "Connected to the running ETABS instance through ETABSv1.Helper.GetObject().";
-                return true;
+                Message = $"ETABS COM ProgID '{EtabsObjectProgId}' is not registered on this computer.";
+                return false;
             }
 
-            Message = "ETABSv1.Helper.GetObject() returned no running ETABS OAPI object.";
-            return false;
+            var clsid = comType.GUID;
+            var hr = GetActiveObject(ref clsid, IntPtr.Zero, out var comObject);
+
+            if (hr != 0 || comObject == null)
+            {
+                Message = $"Could not attach to the running ETABS instance. HRESULT=0x{hr:X8}.";
+                return false;
+            }
+
+            if (comObject is not cOAPI api)
+            {
+                Message = $"The running ETABS COM object was found, but it could not be cast to ETABSv1.cOAPI. Actual type: {comObject.GetType().FullName}.";
+                return false;
+            }
+
+            EtabsObject = api;
+
+            if (EtabsObject.SapModel == null)
+            {
+                Message = "ETABS COM object was attached, but SapModel is not available.";
+                return false;
+            }
+
+            Message = "Connected to the running ETABS instance through the Windows COM Running Object Table.";
+            return true;
         }
         catch (Exception ex)
         {
-            Message = "Could not attach to the running ETABS instance: " + ex.Message;
+            Message = "Could not attach to the running ETABS instance: " + ex.GetType().Name + ": " + ex.Message;
             return false;
         }
     }
@@ -44,30 +71,45 @@ public sealed class EtabsConnection
 
         try
         {
-            // CSI's documented ETABS v1 pattern for starting the installed ETABS version.
-            cHelper helper = new Helper();
-            EtabsObject = helper.CreateObjectProgID(EtabsObjectProgId);
+            var comType = Type.GetTypeFromProgID(EtabsObjectProgId, throwOnError: false);
 
-            if (EtabsObject == null)
+            if (comType == null)
             {
-                Message = "ETABS Helper could not create the ETABS OAPI object.";
+                Message = $"ETABS COM ProgID '{EtabsObjectProgId}' is not registered on this computer.";
                 return false;
             }
 
-            int rc = EtabsObject.ApplicationStart();
+            var instance = Activator.CreateInstance(comType);
 
-            if (rc == 0 && EtabsObject.SapModel != null)
+            if (instance is not cOAPI api)
             {
-                Message = "ETABS started and connected through ETABSv1.Helper.CreateObjectProgID().";
-                return true;
+                Message = instance == null
+                    ? "Could not create the ETABS COM object."
+                    : $"ETABS COM object was created, but it could not be cast to ETABSv1.cOAPI. Actual type: {instance.GetType().FullName}.";
+                return false;
             }
 
-            Message = $"ETABS object was created, but ApplicationStart returned {rc}.";
-            return EtabsObject.SapModel != null;
+            EtabsObject = api;
+            int rc = EtabsObject.ApplicationStart();
+
+            if (rc != 0)
+            {
+                Message = $"ETABS ApplicationStart returned {rc}.";
+                return false;
+            }
+
+            if (EtabsObject.SapModel == null)
+            {
+                Message = "ETABS started, but SapModel is not available.";
+                return false;
+            }
+
+            Message = "ETABS started and connected through direct COM activation.";
+            return true;
         }
         catch (Exception ex)
         {
-            Message = "Unable to start ETABS: " + ex.Message;
+            Message = "Unable to start ETABS: " + ex.GetType().Name + ": " + ex.Message;
             return false;
         }
     }
@@ -90,7 +132,7 @@ public sealed class EtabsConnection
         }
         catch (Exception ex)
         {
-            message = "Could not set ETABS units: " + ex.Message;
+            message = "Could not set ETABS units: " + ex.GetType().Name + ": " + ex.Message;
             return false;
         }
     }
