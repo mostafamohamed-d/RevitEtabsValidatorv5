@@ -15,6 +15,11 @@ public sealed class App : IExternalApplication
     {
         try
         {
+            // Register ETABSv1 assembly resolution before any ETABS API type is first used.
+            // Revit 2025 runs on .NET 8, where ETABSv1 must be resolved from the installed
+            // ETABS 22 location rather than relying on an add-in-local copy.
+            RevitEtabsValidator.ETABS.EtabsAssemblyResolver.Initialize();
+
             try
             {
                 application.CreateRibbonTab(RibbonTab);
@@ -71,7 +76,6 @@ public sealed class App : IExternalApplication
                 // Do not allow logging failure to mask the original startup failure.
             }
 
-            // Prevent an unhandled startup exception from making the add-in unload without diagnostics.
             return Result.Failed;
         }
     }
