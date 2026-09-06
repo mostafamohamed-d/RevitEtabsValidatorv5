@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.0.6
+- Fixed (CRITICAL): `MainWindow.xaml.cs`'s `RunComparisonForSelectedScope`
+  silently validated the *entire* ETABS model (all columns/beams, every
+  story) whenever the selected Revit floor(s) had no mapped ETABS story at
+  all. Root cause: `filterEtabs` required `_selectedEtabsStories.Count > 0`
+  before filtering at all, so an empty mapping (a level ETABS doesn't
+  model) skipped filtering entirely instead of correctly narrowing to
+  nothing. A single-floor validation could turn into a full-model one,
+  flooding the results with thousands of unrelated `MissingInRevit` rows
+  for every other floor's ETABS elements. Fixed by filtering whenever
+  `_selectedEtabsStories.Count < _etabsStoryElevationsMm.Count` (the
+  `Where(...).Contains(...)` filter already correctly yields an empty set
+  when nothing is mapped, once it isn't skipped) - one line. Also added a
+  visible status warning when this happens, instead of a silent flood of
+  results, per the "handled safely and visibly" requirement.
+- Fixed (HIGH): every ETABS COM call (`Connect ETABS`, and the ETABS read
+  inside `Run Validation`) ran synchronously on the same thread hosting the
+  window, which for a modeless Revit add-in window is Revit's own UI
+  thread. ETABS is a separate out-of-process application, so each of the
+  tens of thousands of individual COM calls needed to read a 16,000+ beam
+  model (`GetPoints`/`GetLabelFromName`/`GetSection`/`GetLocalAxes` per
+  frame) is an inter-process round trip; doing all of them one at a time,
+  synchronously, on the UI thread is the most likely cause of Revit
+  appearing to hang during a large-model read. `ConnectEtabs_Click` and the
+  new `ReadEtabsAsync` now do the actual COM/data-fetching work inside
+  `Task.Run`, while every WPF-control-touching line stays on the UI thread
+  (either before the first `await` or automatically after it, via WPF's
+  dispatcher-based `SynchronizationContext`). The toolbar is disabled and a
+  wait cursor shown for the duration (`SetBusy`), so a long read gives
+  visible feedback and a second click can't start an overlapping operation
+  on the same connection. `RunComparisonForSelectedScope` (the actual
+  Revit/ETABS matching pass) is deliberately left untouched and still runs
+  synchronously on the UI thread - it is pure C#, not COM, and was measured
+  in the prior release's added performance test at ~0.4s even at a
+  16,000+-beam scale, so it was never the bottleneck this addresses.
+  **Not verified against a live ETABS install** (no Windows/ETABS access in
+  this environment) - out-of-process COM proxies are generally safe to call
+  from a background thread since the real marshaling happens over RPC to
+  the other process regardless of the calling thread, but if this
+  introduces a COM threading exception on a real machine that the
+  synchronous version didn't have, report it and the fix is a straightforward
+  revert of just this one change (the two fixes in this release are
+  independent).
+
 ## 1.0.5
 - Added: ETABS version support is no longer hardcoded to 21/22. New
   `ETABS/EtabsInstallationScanner` scans every `ETABS <version>` folder under

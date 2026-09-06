@@ -113,6 +113,11 @@ public partial class MainWindow : Window
             if (_validationPending)
             {
                 _validationPending = false;
+                // RunValidation_Click set the toolbar busy before raising the Revit
+                // read; ContinueValidation (which would normally clear it) never
+                // runs on this failure path, so it must be cleared here instead or
+                // the toolbar would stay disabled until the window is reopened.
+                SetBusy(false, null);
                 SetStatus("Validation stopped because Revit could not be read: " + ex.Message);
             }
             else
@@ -136,8 +141,24 @@ public partial class MainWindow : Window
         Raise(RevitRequest.ReadModels);
     }
 
-    private void ConnectEtabs_Click(object s, RoutedEventArgs e)
+    // ETABS is a separate out-of-process application (ETABS.exe), so every ETABS
+    // COM call below is already an inter-process RPC regardless of which of our
+    // threads makes it - the cost is COM marshaling overhead, not Revit/WPF API
+    // affinity. At the reported model scale (16,652 beams) that is tens of
+    // thousands of individual round trips, previously made synchronously on the
+    // same thread hosting this window, which is why Revit could appear to hang
+    // during Connect ETABS / Run Validation. Task.Run below moves only the pure
+    // COM/data-fetching work off that thread; every line that touches a WPF
+    // control still runs on the UI thread, either before the first `await` or
+    // automatically after it (WPF's dispatcher-based SynchronizationContext
+    // resumes `await` continuations on the original UI thread with no manual
+    // Dispatcher call needed). ModelComparer and the rest of the UI-updating code
+    // in RunComparisonForSelectedScope are deliberately left untouched - they are
+    // pure, fast, already-Windows-agnostic C# (measured at ~0.4s for this exact
+    // model scale), not COM, and not the bottleneck this addresses.
+    private async void ConnectEtabs_Click(object s, RoutedEventArgs e)
     {
+        SetBusy(true, "Connecting to ETABS...");
         try
         {
             // Enumerate every running ETABS process first so multiple open instances
@@ -145,7 +166,7 @@ public partial class MainWindow : Window
             // one plain GetActiveObject would have returned. Falls back to the
             // original single-instance ConnectRunning() path if enumeration finds
             // nothing (COM enumeration is best-effort - see ListRunningInstances).
-            var running = _etabs.ListRunningInstances();
+            var running = await Task.Run(() => _etabs.ListRunningInstances());
             bool ok;
 
             if (running.Count > 1)
@@ -156,19 +177,22 @@ public partial class MainWindow : Window
                     SetStatus("ETABS connection cancelled: choose one of the running instances to connect.");
                     return;
                 }
-                ok = _etabs.ConnectTo(picker.Selected);
+                ok = await Task.Run(() => _etabs.ConnectTo(picker.Selected));
             }
             else if (running.Count == 1)
             {
-                ok = _etabs.ConnectTo(running[0]);
+                ok = await Task.Run(() => _etabs.ConnectTo(running[0]));
             }
             else
             {
-                ok = _etabs.ConnectRunning();
+                ok = await Task.Run(() => _etabs.ConnectRunning());
             }
 
             if (!ok && StartEtabs.IsChecked == true)
-                ok = _etabs.StartAndConnect();
+            {
+                SetStatus("Starting ETABS...");
+                ok = await Task.Run(() => _etabs.StartAndConnect());
+            }
 
             if (!ok)
             {
@@ -179,12 +203,16 @@ public partial class MainWindow : Window
 
             SetEtabsConnectionState(true, "ETABS: Connected");
             SetStatus(_etabs.Message);
-            ReadEtabs();
+            await ReadEtabsAsync();
         }
         catch (Exception ex)
         {
             SetEtabsConnectionState(false, "ETABS: Connection error");
             SetStatus("ETABS connection failed: " + ex.Message);
+        }
+        finally
+        {
+            SetBusy(false, null);
         }
     }
 
@@ -194,7 +222,20 @@ public partial class MainWindow : Window
         ConnectionDot.Fill = connected ? Brushes.SeaGreen : Brushes.IndianRed;
     }
 
-    private void ReadEtabs()
+    // Disables the toolbar (Read Revit / Connect ETABS / Run Validation / Scope /
+    // exports) and shows a wait cursor for the duration of a background ETABS
+    // operation, so a long read gives visible feedback instead of looking frozen,
+    // and a second click can't start an overlapping operation on the same
+    // EtabsConnection/SapModel while one is already in flight.
+    private void SetBusy(bool busy, string? statusText)
+    {
+        ToolbarPanel.IsEnabled = !busy;
+        Cursor = busy ? Cursors.Wait : Cursors.Arrow;
+        if (statusText != null)
+            SetStatus(statusText);
+    }
+
+    private async Task ReadEtabsAsync()
     {
         try
         {
@@ -206,15 +247,22 @@ public partial class MainWindow : Window
                 return;
             }
 
-            if (!_etabs.SetUnitsKnMmC())
+            SetStatus("Reading ETABS model (this can take a while for a large model)...");
+
+            var (columns, beams, storyElevations, excludedCount, unitsOk) = await Task.Run(() =>
+            {
+                var unitsOkResult = _etabs.SetUnitsKnMmC();
+                var reader = new EtabsModelReader(sapModel);
+                var readColumns = reader.ReadColumns();
+                var readBeams = reader.ReadBeams();
+                return (readColumns, readBeams, reader.StoryElevationsMm, reader.ExcludedZeroNameCount, unitsOkResult);
+            });
+
+            if (!unitsOk)
                 SetStatus("Warning: ETABS units were not confirmed as kN-mm-C.");
 
-            var reader = new EtabsModelReader(sapModel);
-            var columns = reader.ReadColumns();
-            var beams = reader.ReadBeams();
-
             _etabsStoryElevationsMm.Clear();
-            foreach (var pair in reader.StoryElevationsMm)
+            foreach (var pair in storyElevations)
                 _etabsStoryElevationsMm[pair.Key] = pair.Value;
 
             _etabsColumns = columns;
@@ -223,7 +271,7 @@ public partial class MainWindow : Window
             EtabsColCount.Text = _etabsColumns.Count.ToString();
             EtabsBeamCount.Text = _etabsBeams.Count.ToString();
 
-            SetStatus($"ETABS read complete: {_etabsColumns.Count} columns, {_etabsBeams.Count} beams. Excluded zero-prefixed frames: {reader.ExcludedZeroNameCount}.");
+            SetStatus($"ETABS read complete: {_etabsColumns.Count} columns, {_etabsBeams.Count} beams. Excluded zero-prefixed frames: {excludedCount}.");
         }
         catch (Exception ex)
         {
@@ -263,11 +311,11 @@ public partial class MainWindow : Window
         _all.Clear();
         _floorVisible.Clear();
         UpdateSummary();
-        SetStatus("Reading Revit model before validation...");
+        SetBusy(true, "Reading Revit model before validation...");
         Raise(RevitRequest.ReadModels);
     }
 
-    private void ContinueValidation()
+    private async void ContinueValidation()
     {
         try
         {
@@ -277,7 +325,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            ReadEtabs();
+            await ReadEtabsAsync();
             if (!_etabs.IsConnected)
             {
                 SetStatus("ETABS connection was lost before validation.");
@@ -297,6 +345,10 @@ public partial class MainWindow : Window
         {
             SetStatus("Validation failed: " + ex);
         }
+        finally
+        {
+            SetBusy(false, null);
+        }
     }
 
     private void RunComparisonForSelectedScope()
@@ -306,8 +358,21 @@ public partial class MainWindow : Window
             var revitColumns = _revitColumns.Where(x => _selectedRevitLevels.Contains(x.LevelName)).ToList();
             var revitBeams = _revitBeams.Where(x => _selectedRevitLevels.Contains(x.LevelName)).ToList();
 
-            var filterEtabs = _selectedEtabsStories.Count > 0 &&
-                              _selectedEtabsStories.Count < _etabsStoryElevationsMm.Count;
+            // Filtering is skipped only when it would be a true no-op - every ETABS
+            // story is already represented in the selection, so Where/Contains would
+            // let everything through anyway (a performance shortcut, not a fallback).
+            // Root cause of the bug this replaces: the previous condition also
+            // required _selectedEtabsStories.Count > 0 to filter at all, so when NONE
+            // of the selected Revit levels mapped to any ETABS story (a level ETABS
+            // doesn't model), filtering was skipped entirely and etabsColumns/
+            // etabsBeams silently fell back to the ENTIRE ETABS model instead of an
+            // empty set - turning a single-floor validation into a full-model one and
+            // flooding the results with thousands of unrelated MissingInRevit rows.
+            // Filtering unconditionally on Count < Total fixes this: when
+            // _selectedEtabsStories is empty, Where(x => _selectedEtabsStories.
+            // Contains(...)) correctly yields nothing, exactly as an unmapped
+            // selection should.
+            var filterEtabs = _selectedEtabsStories.Count < _etabsStoryElevationsMm.Count;
 
             var etabsColumns = filterEtabs
                 ? _etabsColumns.Where(x => _selectedEtabsStories.Contains(x.LevelName)).ToList()
@@ -335,7 +400,11 @@ public partial class MainWindow : Window
             if (PlanFloorList.Items.Count > 0)
                 PlanFloorList.SelectedIndex = 0;
             UpdateFloorResults();
-            SetStatus($"Validation complete: {_all.Count} comparison results across {_selectedRevitLevels.Count} selected floor(s).");
+
+            if (_selectedEtabsStories.Count == 0 && _etabsStoryElevationsMm.Count > 0)
+                SetStatus($"Validation complete: {_all.Count} comparison result(s), but none of the {_selectedRevitLevels.Count} selected floor(s) mapped to an ETABS story - every Revit element in scope will show as missing. Check the floor mapping or pick different floors.");
+            else
+                SetStatus($"Validation complete: {_all.Count} comparison results across {_selectedRevitLevels.Count} selected floor(s).");
         }
         catch (Exception ex)
         {
