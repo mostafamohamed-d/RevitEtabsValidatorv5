@@ -1,6 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFrameworks>net48;net8.0-windows</TargetFrameworks>
+    <!--
+      Default development target on current machines is Revit 2025 + ETABS 22.
+      Set -p:BuildLegacy=true when a legacy Revit 2024 + ETABS 21 build is required.
+    -->
+    <TargetFrameworks Condition="'$(BuildLegacy)'!='true'">net8.0-windows</TargetFrameworks>
+    <TargetFrameworks Condition="'$(BuildLegacy)'=='true'">net48;net8.0-windows</TargetFrameworks>
     <UseWPF>true</UseWPF>
     <Platforms>AnyCPU</Platforms>
     <Nullable>enable</Nullable>
@@ -42,7 +47,6 @@
 
   <ItemGroup Condition="'$(TargetFramework)'=='net48'">
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
-
     <Reference Include="ETABSv1">
       <HintPath>$(EtabsInstallPath)\ETABSv1.dll</HintPath>
       <Private>true</Private>
