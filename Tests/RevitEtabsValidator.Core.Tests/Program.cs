@@ -163,6 +163,41 @@ var comparer = new ModelComparer();
     Check("Column section mismatch (200mm off) -> SectionMismatch", res?.Status == ValidationStatus.SectionMismatch, res?.Status.ToString() ?? "null");
 }
 
+// 12. Regression for a Codex review finding on the identity-gate widening fix:
+//     an out-of-tolerance Revit column must not "steal" the single ETABS
+//     candidate away from a different Revit column that is an EXACT match for
+//     it. Both end up with exactly one candidate (the same ETABS id) once the
+//     identity window is widened, so a naive "fewest candidates first, then by
+//     name" processing order could let the drifted column (if it sorts first
+//     alphabetically) claim the ETABS id and falsely report the true exact
+//     match as missing. Global best-score-first ordering must prevent this.
+{
+    var exact = new ColumnElement { Id = "R8-Exact", Name = "ZZZ-Exact", LevelName = "L1", StartPoint = new Point3D(0, 0, 0), EndPoint = new Point3D(0, 0, 3000), Width = 400, Depth = 400 };
+    var drifted = new ColumnElement { Id = "R8-Drift", Name = "AAA-Drift", LevelName = "L1", StartPoint = new Point3D(60, 0, 0), EndPoint = new Point3D(60, 0, 3000), Width = 400, Depth = 400 };
+    var etabsOnly = new ColumnElement { Id = "E8", Name = "C8", LevelName = "L1", StartPoint = new Point3D(0, 0, 0), EndPoint = new Point3D(0, 0, 3000), Width = 400, Depth = 400 };
+
+    // "drifted" sorts before "exact" alphabetically, so a name-tiebreak-only
+    // ordering would let "drifted" claim the shared ETABS candidate first.
+    var report = comparer.CompareColumns(new[] { drifted, exact }, new[] { etabsOnly }, tol);
+    var exactResult = report.Results.FirstOrDefault(x => x.RevitElementId == "R8-Exact");
+    var driftedResult = report.Results.FirstOrDefault(x => x.RevitElementId == "R8-Drift");
+    Check("Exact match claims the shared ETABS candidate over a drifted competitor", exactResult?.Status == ValidationStatus.Matched, exactResult?.Status.ToString() ?? "null");
+    Check("Drifted competitor correctly reported missing once the exact match wins", driftedResult?.Status == ValidationStatus.MissingInEtabs, driftedResult?.Status.ToString() ?? "null");
+}
+
+// 13. Regression for a Codex review finding: a zero PositionToleranceMm (a
+//     valid, if extreme, coordination setting accepted by the UI) must not
+//     collapse the identity window back to zero. A small drift should still
+//     surface as PositionMismatch rather than as two orphaned Missing rows.
+{
+    var zeroTol = new ValidationTolerance { PositionToleranceMm = 0, AngleToleranceDegrees = 0 };
+    var r = new ColumnElement { Id = "R9", Name = "C9", LevelName = "L1", StartPoint = new Point3D(0, 0, 0), EndPoint = new Point3D(0, 0, 3000), Width = 400, Depth = 400 };
+    var e = new ColumnElement { Id = "E9", Name = "C9", LevelName = "L1", StartPoint = new Point3D(1, 0, 0), EndPoint = new Point3D(1, 0, 3000), Width = 400, Depth = 400 };
+    var report = comparer.CompareColumns(new[] { r }, new[] { e }, zeroTol);
+    var res = report.Results.FirstOrDefault(x => x.RevitElementId == "R9");
+    Check("1mm drift at PositionToleranceMm=0 -> PositionMismatch (identity window has a floor)", res?.Status == ValidationStatus.PositionMismatch, res?.Status.ToString() ?? "null");
+}
+
 // 11. Zero/unknown section should not false-flag SectionMismatch
 {
     var r = new ColumnElement { Id = "R7", Name = "C7", LevelName = "L1", StartPoint = new Point3D(3000, 3000, 0), EndPoint = new Point3D(3000, 3000, 3000), Width = 0, Depth = 0 };

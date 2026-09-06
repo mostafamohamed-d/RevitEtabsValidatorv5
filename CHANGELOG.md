@@ -21,6 +21,25 @@
   machine with the plain .NET SDK - including this Linux session, which has
   no Windows Desktop workload or Revit/ETABS reference assemblies. Run with
   `dotnet run --project Tests/RevitEtabsValidator.Core.Tests`.
+- Fixed (found by automated PR review): the identity-gate widening above
+  introduced two follow-on defects, both confirmed by reverting the fix and
+  watching the new regression tests fail against the un-fixed code:
+  - The per-Revit-item processing order was "fewest candidates first, then by
+    level/name" (unchanged from before this release). Once the identity
+    window was widened, an out-of-tolerance Revit element could become the
+    *only* candidate for an ETABS element that was also an exact match for a
+    different Revit element; if the drifted element happened to sort first,
+    it claimed the ETABS id and the true exact match was falsely reported as
+    missing. Processing order is now the globally best candidate score first
+    (falling back to candidate count, then level/name), so an exact match
+    always claims its ETABS counterpart before a weaker candidate can.
+  - `IdentityGateMultiplier` has no widening effect when a user sets
+    `PositionToleranceMm`/`AngleToleranceDegrees` to `0` (a valid, if strict,
+    setting the UI accepts): a multiplier times zero is still zero, so even a
+    1 mm/1 degree drift would fall outside the identity window and silently
+    reproduce the original "two orphaned Missing entries" bug. Added an
+    absolute floor (5 mm / 2 degrees) under the identity window so a strict
+    zero pass/fail tolerance still gets a usable identity window.
 
 ## 1.0.2
 - Fixed: `Installer\Install-RevitEtabsValidator.ps1`'s own artifact-verification

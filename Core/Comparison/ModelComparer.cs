@@ -41,7 +41,17 @@ public sealed class ModelComparer
                 .ToList();
             return (r, candidates);
         })
-        .OrderBy(x => x.candidates.Count)
+        // Process the strongest candidate matches first (globally, not just within
+        // one Revit item's own candidate list). The identity gate is intentionally
+        // wider than the pass/fail tolerance (see IdentityPositionToleranceMm), so a
+        // genuinely drifted element can be the ONLY candidate for an ETABS element
+        // that is also an exact match for a different Revit element. Sorting by
+        // "fewest candidates first" alone let that drifted element claim the shared
+        // ETABS id before the true exact match was considered, falsely reporting the
+        // real match as missing. Sorting by best score first ensures the exact match
+        // always claims its ETABS counterpart before a weaker candidate can.
+        .OrderBy(x => x.candidates.Count == 0 ? double.MaxValue : x.candidates[0].Score)
+        .ThenBy(x => x.candidates.Count)
         .ThenBy(x => x.r.LevelName, StringComparer.OrdinalIgnoreCase)
         .ThenBy(x => x.r.Name, StringComparer.OrdinalIgnoreCase)
         .ToList();
@@ -94,7 +104,11 @@ public sealed class ModelComparer
                 .ToList();
             return (r, candidates);
         })
-        .OrderBy(x => x.candidates.Count)
+        // See the matching comment in CompareColumns: process the strongest
+        // candidate matches first so an exact match always claims its ETABS
+        // counterpart before a weaker, merely-in-range candidate can.
+        .OrderBy(x => x.candidates.Count == 0 ? double.MaxValue : x.candidates[0].Score)
+        .ThenBy(x => x.candidates.Count)
         .ThenBy(x => x.r.LevelName, StringComparer.OrdinalIgnoreCase)
         .ThenBy(x => x.r.Name, StringComparer.OrdinalIgnoreCase)
         .ToList();
@@ -139,12 +153,20 @@ public sealed class ModelComparer
     // IdentityGateMultiplier) so an element that drifted past the strict
     // pass/fail tolerance is still recognized as the same physical element and
     // reported as a PositionMismatch/RotationMismatch with an actionable delta,
-    // rather than as two unrelated Missing entries.
+    // rather than as two unrelated Missing entries. A floor is applied because
+    // multiplying by IdentityGateMultiplier has no widening effect when a user
+    // configures a zero (or near-zero) strict tolerance for a stricter pass/fail
+    // check: without a floor, even a 1 mm/1 degree drift at PositionToleranceMm=0
+    // would still fall outside the identity window and silently collapse back
+    // into the same "two orphaned Missing entries" bug this gate exists to fix.
+    private const double MinIdentityPositionMm = 5.0;
+    private const double MinIdentityAngleDegrees = 2.0;
+
     private static double IdentityPositionToleranceMm(ValidationTolerance t)
-        => t.PositionToleranceMm * Math.Max(1.0, t.IdentityGateMultiplier);
+        => Math.Max(MinIdentityPositionMm, t.PositionToleranceMm * Math.Max(1.0, t.IdentityGateMultiplier));
 
     private static double IdentityAngleToleranceDegrees(ValidationTolerance t)
-        => Math.Min(45.0, t.AngleToleranceDegrees * Math.Max(1.0, t.IdentityGateMultiplier));
+        => Math.Min(45.0, Math.Max(MinIdentityAngleDegrees, t.AngleToleranceDegrees * Math.Max(1.0, t.IdentityGateMultiplier)));
 
     private static bool ColumnIdentityGate(ColumnElement r, ColumnElement e, ValidationTolerance t)
         => r.CenterPoint.PlanDistanceTo(e.CenterPoint) <= IdentityPositionToleranceMm(t);
