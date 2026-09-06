@@ -74,17 +74,13 @@ dotnet build $project -c $Configuration -f $TargetFramework --nologo
 if ($LASTEXITCODE -ne 0) { throw "dotnet build failed with exit code $LASTEXITCODE." }
 
 $dll = Join-Path $projectRoot ("bin\{0}\{1}\RevitEtabsValidator.dll" -f $Configuration, $TargetFramework)
-$builtEtabsDll = Join-Path $projectRoot ("bin\{0}\{1}\ETABSv1.dll" -f $Configuration, $TargetFramework)
-
 if (!(Test-Path -LiteralPath $dll)) { throw "Build succeeded but DLL was not found at: $dll" }
-if (!(Test-Path -LiteralPath $builtEtabsDll)) { throw "Build succeeded but ETABSv1.dll was not copied to: $builtEtabsDll" }
 
 $verifyRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("RevitEtabsValidator-verify-{0}" -f [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $verifyRoot | Out-Null
 $verifyDll = Join-Path $verifyRoot 'RevitEtabsValidator.dll'
 try {
     Copy-Item -LiteralPath $dll -Destination $verifyDll -Force
-    Copy-Item -LiteralPath $builtEtabsDll -Destination (Join-Path $verifyRoot 'ETABSv1.dll') -Force
     Copy-Item -LiteralPath $revitApiDll -Destination (Join-Path $verifyRoot 'RevitAPI.dll') -Force
     Copy-Item -LiteralPath $revitApiUiDll -Destination (Join-Path $verifyRoot 'RevitAPIUI.dll') -Force
 
@@ -110,7 +106,13 @@ $destEtabsDll = Join-Path $destRoot 'ETABSv1.dll'
 $destManifest = Join-Path $destRoot 'RevitEtabsValidator.addin'
 
 Copy-Item -LiteralPath $dll -Destination $destDll -Force
-Copy-Item -LiteralPath $builtEtabsDll -Destination $destEtabsDll -Force
+
+# Never ship a second ETABSv1.dll beside the Revit add-in. Revit should bind to
+# the exact ETABS installation selected by ETABS/EtabsAssemblyResolver.cs.
+if (Test-Path -LiteralPath $destEtabsDll) {
+    Remove-Item -LiteralPath $destEtabsDll -Force
+    Write-Host "Removed stale add-in-local ETABSv1.dll: $destEtabsDll" -ForegroundColor Yellow
+}
 
 $escapedDll = [System.Security.SecurityElement]::Escape($destDll)
 $manifest = @"
@@ -129,13 +131,13 @@ $manifest = @"
 Set-Content -LiteralPath $destManifest -Value $manifest -Encoding UTF8
 
 if (!(Test-Path -LiteralPath $destDll)) { throw "Installed DLL missing: $destDll" }
-if (!(Test-Path -LiteralPath $destEtabsDll)) { throw "Installed ETABS API DLL missing: $destEtabsDll" }
+if (!(Test-Path -LiteralPath $destManifest)) { throw "Installed manifest missing: $destManifest" }
 
-Write-Host "" 
+Write-Host ""
 Write-Host "Installation complete." -ForegroundColor Green
 Write-Host "Target:   $Target"
 Write-Host "DLL:      $destDll"
-Write-Host "ETABSv1:  $destEtabsDll"
+Write-Host "ETABS API: $etabsApiDll"
 Write-Host "Manifest: $destManifest"
 Write-Host ""
 Write-Host "Close and reopen Revit $RevitVersion before testing." -ForegroundColor Yellow
