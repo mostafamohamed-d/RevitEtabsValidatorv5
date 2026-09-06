@@ -95,6 +95,21 @@ For Revit 2025, load the `net8.0-windows` build and keep its matching `ETABSv1.d
 
 Do not use the Revit 2025 DLL in Revit 2024 or the Revit 2024 DLL in Revit 2025.
 
+## Testing
+
+`Tests/RevitEtabsValidator.Core.Tests` covers the `ModelComparer` matching engine
+in `Core/`. That folder has no Revit, ETABS, or WPF dependency, so unlike the
+main add-in project it builds and runs with just the plain .NET SDK on any
+platform, including Linux CI:
+
+```
+dotnet run --project Tests/RevitEtabsValidator.Core.Tests
+```
+
+The main `RevitEtabsValidator.csproj` still requires the Windows Desktop SDK
+workload plus the Revit/ETABS reference assemblies, so it can only be built on
+a Windows workstation with Revit and ETABS installed (see Build above).
+
 ## Default tolerances
 
 - Position: 25 mm

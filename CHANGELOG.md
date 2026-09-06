@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.3
+- Fixed: `Core/Comparison/ModelComparer.cs`'s identity gate (deciding whether a
+  Revit/ETABS pair is even a candidate for the same physical element) used the
+  *exact same* distance/angle as the pass/fail tolerance check. Any column or
+  beam that drifted even slightly past `PositionToleranceMm`/`AngleToleranceDegrees`
+  was therefore excluded from candidacy entirely and reported as two orphaned
+  `MissingInRevit`/`MissingInEtabs` rows instead of one linked `PositionMismatch`
+  or `RotationMismatch` result with an actionable delta - making those two
+  documented statuses (see `Docs/USER_GUIDE.md`) unreachable in practice. Added
+  `ValidationTolerance.IdentityGateMultiplier` (default 4x) so the identity
+  search window is meaningfully wider than the strict pass/fail tolerance,
+  while the pass/fail checks themselves are unchanged. Verified with new
+  regression tests in `Tests/RevitEtabsValidator.Core.Tests` covering both the
+  newly-reachable mismatch statuses and that genuinely unrelated, far-apart
+  elements are still correctly reported as missing rather than falsely paired.
+- Added: `Tests/RevitEtabsValidator.Core.Tests`, a dependency-free console
+  test project covering `ModelComparer`. `Core/` has no Revit/ETABS/WPF
+  dependency, so unlike the main add-in project this builds and runs on any
+  machine with the plain .NET SDK - including this Linux session, which has
+  no Windows Desktop workload or Revit/ETABS reference assemblies. Run with
+  `dotnet run --project Tests/RevitEtabsValidator.Core.Tests`.
+
 ## 1.0.2
 - Fixed: `Installer\Install-RevitEtabsValidator.ps1`'s own artifact-verification
   steps (both the post-build and post-deploy checks) loaded the built DLL via

@@ -25,15 +25,16 @@ public sealed class ModelComparer
     {
         var report = new ValidationReport();
         var remaining = new HashSet<string>(etabs.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
-        var index = BuildIndex(etabs, tol);
+        var searchRadius = IdentityPositionToleranceMm(tol);
+        var index = BuildIndex(etabs, searchRadius);
 
         var pending = revit.Select(r =>
         {
             var candidates = index.Query(
-                    r.CenterPoint.X - tol.PositionToleranceMm,
-                    r.CenterPoint.Y - tol.PositionToleranceMm,
-                    r.CenterPoint.X + tol.PositionToleranceMm,
-                    r.CenterPoint.Y + tol.PositionToleranceMm)
+                    r.CenterPoint.X - searchRadius,
+                    r.CenterPoint.Y - searchRadius,
+                    r.CenterPoint.X + searchRadius,
+                    r.CenterPoint.Y + searchRadius)
                 .Where(e => remaining.Contains(e.Id) && ColumnIdentityGate(r, e, tol))
                 .Select(e => (e, Score: ColumnScore(r, e, tol)))
                 .OrderBy(x => x.Score)
@@ -76,8 +77,8 @@ public sealed class ModelComparer
     {
         var report = new ValidationReport();
         var remaining = new HashSet<string>(etabs.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
-        var index = BuildIndex(etabs, tol);
-        var expand = Math.Max(0.0, tol.PositionToleranceMm + tol.LengthToleranceMm);
+        var expand = Math.Max(0.0, IdentityPositionToleranceMm(tol) + tol.LengthToleranceMm);
+        var index = BuildIndex(etabs, expand);
 
         var pending = revit.Select(r =>
         {
@@ -125,24 +126,35 @@ public sealed class ModelComparer
         return report;
     }
 
-    private static SpatialGridIndex<T> BuildIndex<T>(IReadOnlyList<T> values, ValidationTolerance tol) where T : ElementBase
+    private static SpatialGridIndex<T> BuildIndex<T>(IReadOnlyList<T> values, double searchRadiusMm) where T : ElementBase
     {
-        var cellSize = Math.Max(500.0, Math.Max(tol.PositionToleranceMm, 1.0) * 8.0);
+        var cellSize = Math.Max(500.0, Math.Max(searchRadiusMm, 1.0) * 8.0);
         var index = new SpatialGridIndex<T>(cellSize);
         foreach (var value in values)
             index.Add(value);
         return index;
     }
 
+    // The identity gate uses a widened search window (see ValidationTolerance.
+    // IdentityGateMultiplier) so an element that drifted past the strict
+    // pass/fail tolerance is still recognized as the same physical element and
+    // reported as a PositionMismatch/RotationMismatch with an actionable delta,
+    // rather than as two unrelated Missing entries.
+    private static double IdentityPositionToleranceMm(ValidationTolerance t)
+        => t.PositionToleranceMm * Math.Max(1.0, t.IdentityGateMultiplier);
+
+    private static double IdentityAngleToleranceDegrees(ValidationTolerance t)
+        => Math.Min(45.0, t.AngleToleranceDegrees * Math.Max(1.0, t.IdentityGateMultiplier));
+
     private static bool ColumnIdentityGate(ColumnElement r, ColumnElement e, ValidationTolerance t)
-        => r.CenterPoint.PlanDistanceTo(e.CenterPoint) <= t.PositionToleranceMm;
+        => r.CenterPoint.PlanDistanceTo(e.CenterPoint) <= IdentityPositionToleranceMm(t);
 
     private static bool BeamIdentityGate(BeamElement r, BeamElement e, ValidationTolerance t)
     {
         var g = Geometry(r, e, t);
-        return g.LineOffset <= t.PositionToleranceMm &&
-               g.OverlapRatio >= Clamp01(t.BeamMinimumOverlapRatio) &&
-               g.AngleDelta <= t.AngleToleranceDegrees;
+        return g.LineOffset <= IdentityPositionToleranceMm(t) &&
+               g.OverlapRatio >= Clamp01(t.BeamMinimumOverlapRatio * 0.5) &&
+               g.AngleDelta <= IdentityAngleToleranceDegrees(t);
     }
 
     private static double ColumnScore(ColumnElement r, ColumnElement e, ValidationTolerance t)
