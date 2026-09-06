@@ -15,10 +15,21 @@ public sealed class App : IExternalApplication
     {
         try
         {
-            // Register ETABSv1 assembly resolution before any ETABS API type is first used.
-            // Revit 2025 runs on .NET 8, where ETABSv1 must be resolved from the installed
-            // ETABS 22 location rather than relying on an add-in-local copy.
+            // Register the ETABS resolver first, then proactively load ETABSv1 from the
+            // installed ETABS version. This prevents a stale ETABSv1.dll in another
+            // add-in directory from winning the .NET 8 assembly bind.
             RevitEtabsValidator.ETABS.EtabsAssemblyResolver.Initialize();
+#if ETABS22 || ETABS21
+            try
+            {
+                RevitEtabsValidator.ETABS.EtabsAssemblyResolver.EnsureEtabsApiLoaded();
+            }
+            catch (Exception ex)
+            {
+                LogStartup("ETABS API preload warning: " + ex);
+                // The validator can still start; the Connect button will report the detailed error.
+            }
+#endif
 
             try
             {
@@ -26,7 +37,6 @@ public sealed class App : IExternalApplication
             }
             catch (Autodesk.Revit.Exceptions.ArgumentException)
             {
-                // Tab already exists. Continue and reuse it.
             }
 
             var panel = application.GetRibbonPanels(RibbonTab)
@@ -50,10 +60,9 @@ public sealed class App : IExternalApplication
 
                 if (panel.AddItem(button) is PushButton pb)
                 {
-                    pb.ToolTip = "Compare Revit 2025 structural beams and columns against ETABS.";
+                    pb.ToolTip = "Compare Revit structural beams and columns against ETABS.";
                     pb.LongDescription =
-                        "Reads Revit structural framing/columns and compares them with ETABS frame objects by level, " +
-                        "position, elevation, section dimensions, length and rotation using configurable tolerances.";
+                        "Compares structural members using the project's Revit Internal Origin ↔ ETABS Global coordinate contract.";
                 }
             }
 
@@ -61,22 +70,25 @@ public sealed class App : IExternalApplication
         }
         catch (Exception ex)
         {
-            try
-            {
-                var folder = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "RevitEtabsValidator");
-                Directory.CreateDirectory(folder);
-                File.WriteAllText(
-                    Path.Combine(folder, "startup-error.log"),
-                    DateTime.Now.ToString("O") + Environment.NewLine + ex);
-            }
-            catch
-            {
-                // Do not allow logging failure to mask the original startup failure.
-            }
-
+            LogStartup("RevitEtabsValidator startup failure: " + ex);
             return Result.Failed;
+        }
+    }
+
+    private static void LogStartup(string text)
+    {
+        try
+        {
+            var folder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "RevitEtabsValidator");
+            Directory.CreateDirectory(folder);
+            File.AppendAllText(
+                Path.Combine(folder, "startup-error.log"),
+                DateTime.Now.ToString("O") + Environment.NewLine + text + Environment.NewLine);
+        }
+        catch
+        {
         }
     }
 
