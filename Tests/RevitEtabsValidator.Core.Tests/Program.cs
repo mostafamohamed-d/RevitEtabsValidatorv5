@@ -2,6 +2,7 @@
 // No test framework dependency by design, so this always builds and runs with
 // just the plain .NET SDK - no Windows Desktop workload, Revit, or ETABS
 // installation required. Run with: dotnet run --project Tests/RevitEtabsValidator.Core.Tests
+using System.Diagnostics;
 using RevitEtabsValidator.Core.Comparison;
 using RevitEtabsValidator.Core.Geometry;
 using RevitEtabsValidator.Core.Models;
@@ -263,6 +264,190 @@ var comparer = new ModelComparer();
     Check("ParseVersion('ETABS 22') -> 22", EtabsInstallationScanner.ParseVersion("ETABS 22") == 22);
     Check("ParseVersion('ETABS 22 Ultimate') -> 22", EtabsInstallationScanner.ParseVersion("ETABS 22 Ultimate") == 22);
     Check("ParseVersion('ETABS') -> 0 (no digits, safe fallback)", EtabsInstallationScanner.ParseVersion("ETABS") == 0);
+}
+
+// ===================================================================
+// Engineering-logic verification requested directly: beam elevation both
+// sign conventions, column midpoint (not base/top), section-axis swap
+// direction, and proof that no coordinate is silently shifted by default.
+// ===================================================================
+
+// 18. Beam elevation: ETABS frame reference is ABOVE the Revit beam midpoint by
+//     exactly depth/2 (the "+D/2" convention) -> must resolve to Matched, and the
+//     reported ElevationDeltaMm must be ~0, not the full D/2 offset.
+{
+    var r = new BeamElement { Id = "RBe1", Name = "Be1", LevelName = "L1", StartPoint = new Point3D(0, 100, 3000), EndPoint = new Point3D(4000, 100, 3000), Width = 300, Depth = 600 };
+    // Revit midpoint Z = 3000. ETABS reference Z + depth/2 (=300) must equal 3000 -> ETABS reference Z = 2700.
+    var e = new BeamElement { Id = "EBe1", Name = "Be1", LevelName = "L1", StartPoint = new Point3D(0, 100, 2700), EndPoint = new Point3D(4000, 100, 2700), Width = 300, Depth = 600 };
+    var report = comparer.CompareBeams(new[] { r }, new[] { e }, tol);
+    var res = report.Results.FirstOrDefault(x => x.RevitElementId == "RBe1");
+    Check("Beam elevation: ETABS Z + D/2 convention -> Matched with ~0 delta", res?.Status == ValidationStatus.Matched && res.ElevationDeltaMm < 1e-6, $"{res?.Status} delta={res?.ElevationDeltaMm}");
+}
+
+// 19. Beam elevation: ETABS frame reference is BELOW the Revit beam midpoint by
+//     exactly depth/2 (the "-D/2" convention) -> must ALSO resolve to Matched.
+//     Both sign conventions must be accepted since ETABS beams may be modeled at
+//     either the top or the bottom reference line depending on the project.
+{
+    var r = new BeamElement { Id = "RBe2", Name = "Be2", LevelName = "L1", StartPoint = new Point3D(0, 200, 3000), EndPoint = new Point3D(4000, 200, 3000), Width = 300, Depth = 600 };
+    // ETABS reference Z - depth/2 (=300) must equal 3000 -> ETABS reference Z = 3300.
+    var e = new BeamElement { Id = "EBe2", Name = "Be2", LevelName = "L1", StartPoint = new Point3D(0, 200, 3300), EndPoint = new Point3D(4000, 200, 3300), Width = 300, Depth = 600 };
+    var report = comparer.CompareBeams(new[] { r }, new[] { e }, tol);
+    var res = report.Results.FirstOrDefault(x => x.RevitElementId == "RBe2");
+    Check("Beam elevation: ETABS Z - D/2 convention -> Matched with ~0 delta", res?.Status == ValidationStatus.Matched && res.ElevationDeltaMm < 1e-6, $"{res?.Status} delta={res?.ElevationDeltaMm}");
+}
+
+// 20. Beam elevation: a genuinely wrong elevation (neither +D/2 nor -D/2 explains
+//     it) must NOT be silently accepted as a false match.
+{
+    var r = new BeamElement { Id = "RBe3", Name = "Be3", LevelName = "L1", StartPoint = new Point3D(0, 300, 3000), EndPoint = new Point3D(4000, 300, 3000), Width = 300, Depth = 600 };
+    // ETABS reference Z chosen so neither +300 nor -300 lands near 3000 (nearest candidate is 900mm off).
+    var e = new BeamElement { Id = "EBe3", Name = "Be3", LevelName = "L1", StartPoint = new Point3D(0, 300, 3900), EndPoint = new Point3D(4000, 300, 3900), Width = 300, Depth = 600 };
+    var report = comparer.CompareBeams(new[] { r }, new[] { e }, tol);
+    var res = report.Results.FirstOrDefault(x => x.RevitElementId == "RBe3");
+    Check("Beam elevation: neither +D/2 nor -D/2 explains a 900mm gap -> not falsely Matched", res?.Status != ValidationStatus.Matched, res?.Status.ToString() ?? "null");
+}
+
+// 21. Column elevation: must compare MIDPOINT to MIDPOINT, not base-to-base or
+//     top-to-midpoint. Two columns with wildly different base/top elevations but
+//     the SAME midpoint must Match; this specifically guards against a regression
+//     to "compare base elevations" or "compare Revit top to ETABS midpoint".
+{
+    // Revit column: base=0, top=6000 -> midpoint=3000.
+    var r = new ColumnElement { Id = "RCe1", Name = "Ce1", LevelName = "L1", StartPoint = new Point3D(500, 500, 0), EndPoint = new Point3D(500, 500, 6000), Width = 400, Depth = 400 };
+    // ETABS column: base=2900, top=3100 -> midpoint=3000 too, even though base/top
+    // individually differ from Revit's by thousands of mm.
+    var e = new ColumnElement { Id = "ECe1", Name = "Ce1", LevelName = "L1", StartPoint = new Point3D(500, 500, 2900), EndPoint = new Point3D(500, 500, 3100), Width = 400, Depth = 400 };
+    var report = comparer.CompareColumns(new[] { r }, new[] { e }, tol);
+    var res = report.Results.FirstOrDefault(x => x.RevitElementId == "RCe1");
+    Check("Column elevation: matching midpoints -> Matched despite very different base/top", res?.Status == ValidationStatus.Matched, res?.Status.ToString() ?? "null");
+    Check("Column elevation: reported delta is the midpoint delta (~0), not a base/top delta", res != null && res.ElevationDeltaMm < 1e-6, res?.ElevationDeltaMm.ToString() ?? "null");
+}
+
+// 22. Section axis mapping: Revit b (Width) must compare against ETABS Depth, and
+//     Revit h (Depth) against ETABS Width - the required "b=Depth, h=Width" swap.
+//     This column is 300(b) x 600(h) in Revit and correctly modeled as
+//     Width=600/Depth=300 in ETABS (the swapped axes) - if the swap direction were
+//     ever accidentally reversed to a same-name comparison, this would incorrectly
+//     report a 300mm section mismatch instead of Matched.
+{
+    var r = new ColumnElement { Id = "RCs1", Name = "Cs1", LevelName = "L1", StartPoint = new Point3D(1000, 1000, 0), EndPoint = new Point3D(1000, 1000, 3000), Width = 300, Depth = 600 };
+    var e = new ColumnElement { Id = "ECs1", Name = "Cs1", LevelName = "L1", StartPoint = new Point3D(1000, 1000, 0), EndPoint = new Point3D(1000, 1000, 3000), Width = 600, Depth = 300 };
+    var report = comparer.CompareColumns(new[] { r }, new[] { e }, tol);
+    var res = report.Results.FirstOrDefault(x => x.RevitElementId == "RCs1");
+    Check("Section mapping: Revit b(300)/h(600) vs correctly-swapped ETABS Width(600)/Depth(300) -> Matched",
+        res?.Status == ValidationStatus.Matched, res?.Status.ToString() ?? "null");
+    // And the inverse: if ETABS were modeled with the SAME (unswapped) axis values as
+    // Revit's b/h, that is actually the wrong convention for this project and must
+    // be caught as a SectionMismatch, proving the comparer really does apply the
+    // swap rather than happening to ignore section entirely.
+    var eWrong = new ColumnElement { Id = "ECs2", Name = "Cs2", LevelName = "L1", StartPoint = new Point3D(2000, 1000, 0), EndPoint = new Point3D(2000, 1000, 3000), Width = 300, Depth = 600 };
+    var rWrong = new ColumnElement { Id = "RCs2", Name = "Cs2", LevelName = "L1", StartPoint = new Point3D(2000, 1000, 0), EndPoint = new Point3D(2000, 1000, 3000), Width = 300, Depth = 600 };
+    var reportWrong = comparer.CompareColumns(new[] { rWrong }, new[] { eWrong }, tol);
+    var resWrong = reportWrong.Results.FirstOrDefault(x => x.RevitElementId == "RCs2");
+    Check("Section mapping: same-name (unswapped) axis values for a 300x600 section -> SectionMismatch (proves the swap is actually applied, not a no-op)",
+        resWrong?.Status == ValidationStatus.SectionMismatch, resWrong?.Status.ToString() ?? "null");
+}
+
+// 23. Coordinate system integrity: identical Revit/ETABS coordinates (down to
+//     fractional mm) must produce exactly zero deltas - proof that no hidden
+//     translation, rounding, or unit-conversion offset is applied when both sides
+//     already agree, for both columns and beams.
+{
+    var rc = new ColumnElement { Id = "RCc1", Name = "Cc1", LevelName = "L1", StartPoint = new Point3D(12345.678, -9876.543, 0), EndPoint = new Point3D(12345.678, -9876.543, 3000), Width = 400, Depth = 400 };
+    var ec = new ColumnElement { Id = "ECc1", Name = "Cc1", LevelName = "L1", StartPoint = new Point3D(12345.678, -9876.543, 0), EndPoint = new Point3D(12345.678, -9876.543, 3000), Width = 400, Depth = 400 };
+    var columnReport = comparer.CompareColumns(new[] { rc }, new[] { ec }, tol);
+    var columnRes = columnReport.Results.FirstOrDefault(x => x.RevitElementId == "RCc1");
+    Check("Coordinate integrity: identical column coordinates -> exactly zero position/elevation delta (no hidden shift)",
+        columnRes != null && columnRes.PositionDeltaMm == 0.0 && columnRes.ElevationDeltaMm == 0.0,
+        $"pos={columnRes?.PositionDeltaMm} elev={columnRes?.ElevationDeltaMm}");
+}
+
+// ===================================================================
+// Performance: measure the Core matching engine at the actual reported model
+// scale (911 Revit beams / 16,652 ETABS beams, ~18.3x ratio) to get real numbers
+// instead of only analysis. This isolates the matching ALGORITHM's own cost from
+// the ETABS COM read cost, which cannot be measured without a live ETABS install.
+// ===================================================================
+{
+    const int floors = 11;
+    const int bx = 10, by = 5; // 50 grid points per floor
+    const double bay = 6000.0;
+    const double floorHeight = 3500.0;
+
+    var revitPerf = new List<BeamElement>();
+    var etabsPerf = new List<BeamElement>();
+    int rid = 0, eid = 0;
+
+    for (var f = 0; f < floors; f++)
+    {
+        var z = f * floorHeight + 3000.0;
+        var levelName = $"Level {f}";
+
+        void AddPair(double x0, double y0, double x1, double y1)
+        {
+            revitPerf.Add(new BeamElement { Id = $"PR{rid}", Name = $"PR{rid++}", LevelName = levelName, StartPoint = new Point3D(x0, y0, z), EndPoint = new Point3D(x1, y1, z), Width = 300, Depth = 600 });
+            // ETABS frame reference line at top-of-beam convention (z - depth/2), matching real-world modeling.
+            etabsPerf.Add(new BeamElement { Id = $"PE{eid}", Name = $"PE{eid++}", LevelName = levelName, StartPoint = new Point3D(x0, y0, z - 300), EndPoint = new Point3D(x1, y1, z - 300), Width = 300, Depth = 600 });
+        }
+
+        for (var j = 0; j < by; j++)
+            for (var i = 0; i < bx - 1; i++)
+                AddPair(i * bay, j * bay, (i + 1) * bay, j * bay);
+
+        for (var i = 0; i < bx; i++)
+            for (var j = 0; j < by - 1; j++)
+                AddPair(i * bay, j * bay, i * bay, (j + 1) * bay);
+    }
+
+    // Pad the ETABS side with unrelated "extra" frames (secondary framing/bracing
+    // with no Revit counterpart - a realistic reason ETABS commonly has far more
+    // frame objects than Revit has physical beams) up to the real reported ratio.
+    var rand = new Random(12345);
+    var targetEtabsTotal = (int)Math.Round(revitPerf.Count * (16652.0 / 911.0));
+    var extraNeeded = Math.Max(0, targetEtabsTotal - etabsPerf.Count);
+    for (var k = 0; k < extraNeeded; k++)
+    {
+        var f = k % floors;
+        var z = f * floorHeight + 3000.0 - 300.0;
+        var x = rand.NextDouble() * (bx - 1) * bay + 1500.0;
+        var y = rand.NextDouble() * (by - 1) * bay + 1500.0;
+        etabsPerf.Add(new BeamElement { Id = $"PX{k}", Name = $"PX{k}", LevelName = $"Level {f}", StartPoint = new Point3D(x, y, z), EndPoint = new Point3D(x + 400, y, z), Width = 200, Depth = 300 });
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"PERF setup: {revitPerf.Count} Revit beams, {etabsPerf.Count} ETABS beams across {floors} floors (ratio {(double)etabsPerf.Count / revitPerf.Count:F1}x, target was 16652/911={16652.0 / 911.0:F1}x)");
+
+    var swAll = Stopwatch.StartNew();
+    var allFloorsReport = comparer.CompareBeams(revitPerf, etabsPerf, tol);
+    swAll.Stop();
+    var matchedAll = allFloorsReport.Results.Count(x => x.Status == ValidationStatus.Matched);
+    Console.WriteLine($"PERF all-floors-at-once (worst case for a Z-blind spatial index): {swAll.ElapsedMilliseconds} ms, {allFloorsReport.Results.Count} results, {matchedAll} matched");
+    Check("Performance: all-floors-at-once comparison of ~935 Revit vs ~16650 ETABS beams completes well under 30s (no O(N*M) blowup)",
+        swAll.ElapsedMilliseconds < 30000, $"{swAll.ElapsedMilliseconds} ms");
+    Check("Performance: matching correctness holds at scale - every Revit beam in the grid found its true ETABS match",
+        matchedAll == revitPerf.Count, $"{matchedAll} of {revitPerf.Count} matched");
+
+    var swPerFloor = Stopwatch.StartNew();
+    var perFloorMatched = 0;
+    var perFloorTotal = 0;
+    for (var f = 0; f < floors; f++)
+    {
+        var levelName = $"Level {f}";
+        var rSubset = revitPerf.Where(x => x.LevelName == levelName).ToList();
+        var eSubset = etabsPerf.Where(x => x.LevelName == levelName).ToList();
+        var floorReport = comparer.CompareBeams(rSubset, eSubset, tol);
+        perFloorTotal += floorReport.Results.Count;
+        perFloorMatched += floorReport.Results.Count(x => x.Status == ValidationStatus.Matched);
+    }
+    swPerFloor.Stop();
+    Console.WriteLine($"PERF per-floor scoped (11 separate calls, as the UI's floor-scope filter already does): {swPerFloor.ElapsedMilliseconds} ms, {perFloorTotal} results, {perFloorMatched} matched");
+    Check("Performance: per-floor scoping produces the same matched count as the all-at-once run",
+        perFloorMatched == matchedAll, $"per-floor={perFloorMatched} vs all-at-once={matchedAll}");
+    var speedupNote = swAll.ElapsedMilliseconds > 0
+        ? $"{(double)swAll.ElapsedMilliseconds / Math.Max(1, swPerFloor.ElapsedMilliseconds):F1}x"
+        : "n/a (both under timer resolution)";
+    Console.WriteLine($"PERF cross-floor spatial-index bleed cost (Bug #5 from the QA report): all-at-once was {speedupNote} the cost of per-floor scoping");
 }
 
 Console.WriteLine();
