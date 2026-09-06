@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.0.4
+- Redesigned `Revit/UI/MainWindow.xaml`: consistent card-based layout, a
+  proper button/text-box style system (rounded corners, hover/press
+  feedback, a primary accent style for the main actions vs. a secondary
+  outline style for the rest), styled `DataGrid` headers, and a colored
+  severity stripe on each results-grid row (via a new
+  `SeverityToBrushConverter`) so problem rows are visible at a glance
+  without scrolling to the Status column. The eight summary tiles now carry
+  a colored accent bar matching their meaning (green for Matched, amber for
+  Warnings, red for Errors/Missing).
+- Fixed: the ETABS connection indicator dot in the header was hardcoded to
+  green in XAML and never actually updated - it looked "connected" even when
+  `ConnectionStateText` said "Not connected". It's now named `ConnectionDot`
+  and set alongside the status text through a new `SetEtabsConnectionState`
+  helper in `MainWindow.xaml.cs`.
+- Removed: the "All" button in the Floor Plans panel and its
+  `AllFloors_Click` handler. That button had already been hidden at runtime
+  since a prior release (`MainWindow.CompatibilityFixes.cs`, now deleted)
+  because it was redundant with "Scope…" → "Select All"; instead of styling
+  a control nobody could click, it and its hide-button workaround are gone.
+- Not verified visually in this session: this environment has no Windows
+  Desktop SDK workload or Revit/ETABS install, so `RevitEtabsValidator.csproj`
+  cannot be built or run here (see BUILD_NOTES.txt). The XAML was checked for
+  well-formedness and every `x:Name`/event handler was cross-referenced
+  against the code-behind, but a first run on a real Windows/Revit host is
+  recommended before relying on it.
+
 ## 1.0.3
 - Fixed: `Core/Comparison/ModelComparer.cs`'s identity gate (deciding whether a
   Revit/ETABS pair is even a candidate for the same physical element) used the

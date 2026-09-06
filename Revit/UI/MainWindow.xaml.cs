@@ -145,20 +145,26 @@ public partial class MainWindow : Window
 
             if (!ok)
             {
-                ConnectionStateText.Text = "ETABS: Not connected";
+                SetEtabsConnectionState(false, "ETABS: Not connected");
                 SetStatus(_etabs.Message + " Enable 'Start ETABS if not running' when required.");
                 return;
             }
 
-            ConnectionStateText.Text = "ETABS: Connected";
+            SetEtabsConnectionState(true, "ETABS: Connected");
             SetStatus(_etabs.Message);
             ReadEtabs();
         }
         catch (Exception ex)
         {
-            ConnectionStateText.Text = "ETABS: Connection error";
+            SetEtabsConnectionState(false, "ETABS: Connection error");
             SetStatus("ETABS connection failed: " + ex.Message);
         }
+    }
+
+    private void SetEtabsConnectionState(bool connected, string label)
+    {
+        ConnectionStateText.Text = label;
+        ConnectionDot.Fill = connected ? Brushes.SeaGreen : Brushes.IndianRed;
     }
 
     private void ReadEtabs()
@@ -168,7 +174,7 @@ public partial class MainWindow : Window
             var sapModel = _etabs.SapModel;
             if (sapModel == null)
             {
-                ConnectionStateText.Text = "ETABS: Not connected";
+                SetEtabsConnectionState(false, "ETABS: Not connected");
                 SetStatus("ETABS is not connected.");
                 return;
             }
@@ -437,23 +443,6 @@ public partial class MainWindow : Window
         }
 
         if (ShowFloorSelection() && _all.Count > 0)
-            RunComparisonForSelectedScope();
-    }
-
-    private void AllFloors_Click(object s, RoutedEventArgs e)
-    {
-        if (_revitLevels.Count == 0)
-            PopulateRevitLevels();
-
-        ApplyFloorScope(_revitLevels.Select(x => new FloorScopeItem
-        {
-            RevitLevel = x.Name,
-            RevitElevationMm = x.ElevationMm,
-            EtabsStory = _revitToEtabsStory.TryGetValue(x.Name, out var story) ? story : "",
-            EtabsElevationMm = _revitToEtabsStory.TryGetValue(x.Name, out var st) && _etabsStoryElevationsMm.TryGetValue(st, out var el) ? el : 0,
-            IsSelected = true
-        }).ToList());
-        if (_all.Count > 0)
             RunComparisonForSelectedScope();
     }
 
