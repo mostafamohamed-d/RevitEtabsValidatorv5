@@ -17,6 +17,38 @@ dotnet build .\RevitEtabsValidator.csproj -c Release
 
 The package uses ETABS COM late-binding, so there is intentionally no ETABS API DLL in the project references.
 
+BUILDING FOR REVIT 2024 / ETABS 21 (net48)
+===========================================
+The csproj only exposes `net48` as a valid target framework when the
+MSBuild property `BuildLegacy=true` is set (default is `net8.0-windows`
+only, so a plain `dotnet build`/VS build without any flags stays simple
+and doesn't require both Revit versions' reference assemblies to be
+present at once).
+
+- Using the installer script (recommended): no extra step needed -
+  `Installer\Install-RevitEtabsValidator.ps1 -Target Revit2024-ETABS21`
+  already passes `-p:BuildLegacy=true` internally.
+- Using the CLI directly:
+  dotnet build .\RevitEtabsValidator.csproj -c Release -f net48 -p:BuildLegacy=true
+- Building directly from Visual Studio (pressing Build/F6, or letting
+  IntelliSense build "Entire Solution"): VS does not know about
+  `-p:BuildLegacy=true` unless you tell it. Without it, VS only sees
+  `net8.0-windows` and, on a machine that doesn't have the .NET 8 SDK's
+  reference assemblies installed, this fails with:
+    MSB3644: The reference assemblies for net8.0-windows,Version=v0.0
+    were not found.
+  Fix: create a `RevitEtabsValidator.csproj.user` file next to
+  `RevitEtabsValidator.csproj` (this file is per-developer and already
+  gitignored via `*.user`) containing:
+    <Project>
+      <PropertyGroup>
+        <TargetFrameworks>net48</TargetFrameworks>
+      </PropertyGroup>
+    </Project>
+  Reload the solution afterward. This makes both VS and `dotnet build`
+  (with no extra flags) target `net48` only, matching Revit 2024/ETABS 21,
+  with no .NET 8 SDK required on that machine at all.
+
 CORE ENGINE TESTS
 =================
 Tests/RevitEtabsValidator.Core.Tests builds and runs on any machine with the

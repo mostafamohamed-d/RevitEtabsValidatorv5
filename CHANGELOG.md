@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.7
+- Fixed: `Installer/Install-RevitEtabsValidator.ps1` ran
+  `dotnet clean`/`dotnet build ... -f net48` without also passing
+  `-p:BuildLegacy=true`. Since the csproj only exposes `net48` as a valid
+  `TargetFrameworks` entry when that MSBuild property is set (it defaults
+  to `net8.0-windows` only, to keep default/CI builds simple), the
+  `Revit2024-ETABS21` install path would fail immediately with an
+  "invalid/undefined target framework" error. Both commands now pass
+  `-p:BuildLegacy=true` unconditionally; `-f $TargetFramework` still
+  restricts the actual build to the one framework being installed, so this
+  has no effect on the `Revit2025-ETABS22` path.
+- Documented: building `net48` directly from Visual Studio (rather than
+  via the installer script) requires a local `RevitEtabsValidator.csproj.user`
+  override, since VS's default/IntelliSense build otherwise only sees the
+  `net8.0-windows` target and fails with MSB3644 on machines without the
+  .NET 8 SDK. See `BUILD_NOTES.txt`.
+
 ## 1.0.6
 - Fixed (CRITICAL): `MainWindow.xaml.cs`'s `RunComparisonForSelectedScope`
   silently validated the *entire* ETABS model (all columns/beams, every
