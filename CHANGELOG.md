@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.9
+- Fixed (CRITICAL, net48 build): 17 files across `Core/`, `ETABS/`, and `Revit/`
+  (most notably `MainWindow.xaml.cs`, `ModelComparer.cs`, `EtabsConnection.cs`,
+  `EtabsInstallationScanner.cs`) used `List<>`, `Dictionary<>`, `Math.*`,
+  `Path`/`Directory`/`File`, and LINQ (`.Where`/`.Select`/...) without an
+  explicit `using` for their namespace, relying entirely on the SDK's
+  `ImplicitUsings` code-gen. That was never actually exercised end-to-end for
+  the `net48` leg of this project before now (only `net8.0-windows`, via this
+  session's own dependency-free test project on Linux, and CI has no Windows
+  build at all) - on at least one real net48/VS toolchain the generated
+  implicit-usings file for that target didn't get produced, so the same
+  `CS0103 'Path'/'Directory' does not exist` failure (and the cascading
+  "MainWindow doesn't contain ExportJson_Click" error from the resulting
+  broken assembly) that a user hit building for Revit 2024/ETABS 21 was
+  latent in every one of those 17 files, not just the one that happened to
+  surface first. Every affected file now has its own explicit `using`
+  statements and no longer depends on `ImplicitUsings` to compile.
+
 ## 1.0.8
 - Fixed (HIGH): the floor plan could render blank/near-invisible on the very
   first validation run. `FitPlan_Click` computed its fit scale from

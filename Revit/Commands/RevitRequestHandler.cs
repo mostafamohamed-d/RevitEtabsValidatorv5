@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using Autodesk.Revit.UI;
 using RevitEtabsValidator.ETABS;
 using RevitEtabsValidator.Core.Comparison;

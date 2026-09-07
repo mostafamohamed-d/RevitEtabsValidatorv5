@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using ETABSv1;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
