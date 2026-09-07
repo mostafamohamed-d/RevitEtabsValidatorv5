@@ -169,8 +169,8 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="74"/>
             <RowDefinition Height="*" MinHeight="320"/>
-            <RowDefinition Height="6"/>
-            <RowDefinition Height="160" MinHeight="110"/>
+            <RowDefinition x:Name="ResultsSplitterRow" Height="0"/>
+            <RowDefinition x:Name="ResultsGridRow" Height="0"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
@@ -358,6 +358,10 @@
                     </Border>
                     <Canvas x:Name="PlanCanvas" Background="Transparent" MouseWheel="PlanCanvas_MouseWheel" MouseDown="PlanCanvas_MouseDown" MouseMove="PlanCanvas_MouseMove" MouseUp="PlanCanvas_MouseUp" SizeChanged="PlanCanvas_SizeChanged"/>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="10" Panel.ZIndex="5">
+                        <Border Background="White" BorderBrush="{StaticResource BorderColorBrush}" BorderThickness="1" CornerRadius="4" Padding="8,5" Margin="0,0,6,0">
+                            <CheckBox x:Name="ShowLabels" Content="Labels" IsChecked="True" FontSize="12" Checked="ShowLabels_Changed" Unchecked="ShowLabels_Changed"/>
+                        </Border>
+                        <Button x:Name="ToggleResultsButton" Content="Results Table ▾" Width="120" Style="{StaticResource CompactButtonStyle}" Margin="0,0,6,0" Click="ToggleResultsTable_Click"/>
                         <Button Content="Fit" Width="52" Style="{StaticResource CompactButtonStyle}" Margin="0,0,6,0" Click="FitPlan_Click"/>
                         <Button Content="−" Width="32" Style="{StaticResource CompactButtonStyle}" Margin="0,0,6,0" Click="ZoomOut_Click"/>
                         <Button Content="+" Width="32" Style="{StaticResource CompactButtonStyle}" Margin="0,0,6,0" Click="ZoomIn_Click"/>
@@ -418,16 +422,21 @@
             </Border>
         </Grid>
 
-        <!-- Drag to resize the plan view vs. the results grid below it -->
-        <GridSplitter Grid.Row="5" HorizontalAlignment="Stretch" VerticalAlignment="Center" Height="6" Background="{StaticResource BorderColorBrush}" Cursor="SizeNS" ResizeBehavior="PreviousAndNext" ShowsPreview="True"/>
+        <!-- Drag to resize the plan view vs. the results grid below it (hidden by
+             default - the plan is the primary view; ToggleResultsTable_Click shows
+             this on demand without losing the row-by-row breakdown). -->
+        <GridSplitter x:Name="ResultsSplitter" Grid.Row="5" HorizontalAlignment="Stretch" VerticalAlignment="Center" Height="6" Background="{StaticResource BorderColorBrush}" Cursor="SizeNS" ResizeBehavior="PreviousAndNext" ShowsPreview="True" Visibility="Collapsed"/>
 
         <!-- Results grid -->
-        <Border Grid.Row="6" Style="{StaticResource CardStyle}" Margin="0,4,0,0">
+        <Border x:Name="ResultsBorder" Grid.Row="6" Style="{StaticResource CardStyle}" Margin="0,4,0,0" Visibility="Collapsed">
             <Grid>
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                 <DockPanel Margin="14,10,14,6">
                     <TextBlock Text="Current Floor Results" Style="{StaticResource SectionHeaderStyle}"/>
-                    <TextBlock x:Name="FloorResultsSummary" DockPanel.Dock="Right" Foreground="{StaticResource TextMutedBrush}"/>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <TextBlock x:Name="FloorResultsSummary" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                        <Button Content="Hide ▴" Width="70" Style="{StaticResource CompactButtonStyle}" Click="ToggleResultsTable_Click"/>
+                    </StackPanel>
                 </DockPanel>
                 <DataGrid x:Name="FloorResultsGrid" Grid.Row="1" Style="{StaticResource ResultsGridStyle}" AutoGenerateColumns="False" IsReadOnly="True" SelectionChanged="FloorResultsGrid_SelectionChanged" Margin="6,0,6,6">
                     <DataGrid.Columns>

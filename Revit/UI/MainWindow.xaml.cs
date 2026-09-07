@@ -66,6 +66,13 @@ public partial class MainWindow : Window
     private readonly Dictionary<ValidationResult, List<Shape>> _planShapesByResult = new();
     private readonly List<Shape> _highlightedShapes = new();
 
+    // The results table starts hidden (see ResultsSplitterRow/ResultsGridRow in
+    // XAML, both Height="0") so the plan is the primary, full-height view; these
+    // are the sizes restored when the user re-opens it via ToggleResultsTable_Click.
+    private bool _resultsTableVisible;
+    private GridLength _savedSplitterRowHeight = new(6);
+    private GridLength _savedResultsRowHeight = new(160);
+
     public MainWindow(UIApplication uiapp)
     {
         InitializeComponent();
@@ -557,6 +564,48 @@ public partial class MainWindow : Window
             RunComparisonForSelectedScope();
     }
 
+    private void ToggleResultsTable_Click(object s, RoutedEventArgs e) => SetResultsTableVisible(!_resultsTableVisible);
+
+    private void SetResultsTableVisible(bool visible)
+    {
+        _resultsTableVisible = visible;
+        if (visible)
+        {
+            ResultsSplitterRow.Height = _savedSplitterRowHeight;
+            ResultsGridRow.Height = _savedResultsRowHeight;
+            ResultsSplitter.Visibility = Visibility.Visible;
+            ResultsBorder.Visibility = Visibility.Visible;
+            ToggleResultsButton.Content = "Results Table ▴";
+        }
+        else
+        {
+            if (ResultsSplitterRow.Height.Value > 0)
+                _savedSplitterRowHeight = ResultsSplitterRow.Height;
+            if (ResultsGridRow.Height.Value > 0)
+                _savedResultsRowHeight = ResultsGridRow.Height;
+            ResultsSplitterRow.Height = new GridLength(0);
+            ResultsGridRow.Height = new GridLength(0);
+            ResultsSplitter.Visibility = Visibility.Collapsed;
+            ResultsBorder.Visibility = Visibility.Collapsed;
+            ToggleResultsButton.Content = "Results Table ▾";
+        }
+
+        // The plan's viewport just grew or shrank, but PlanViewHost.ActualWidth/
+        // Height won't reflect that until WPF runs its next layout pass - reading
+        // them synchronously here would still see the pre-toggle size. Defer past
+        // that layout pass instead of repeating the same mistake FitPlan_Click's
+        // own guard exists to avoid.
+        if (_planHasContent)
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => FitPlan_Click(null, null)));
+    }
+
+    private void ShowLabels_Changed(object s, RoutedEventArgs e)
+    {
+        if (!IsInitialized || !_planHasContent)
+            return;
+        DrawPlan(PlanFloorList.SelectedItem?.ToString() ?? "");
+    }
+
     private void ClearFloorView_Click(object s, RoutedEventArgs e)
     {
         PlanFloorList.SelectedIndex = -1;
@@ -739,6 +788,13 @@ public partial class MainWindow : Window
         AttachVisual(line, beam.Name, etabs, beam.Id, result);
         PlanCanvas.Children.Add(line);
         RegisterPlanShape(result, line);
+
+        // Only label the Revit side of a matched/mismatched pair - the ETABS shape
+        // for that same result sits almost on top of it, so a second label there
+        // would just overlap. An ETABS shape with no Revit counterpart (Missing in
+        // Revit) still gets labeled, since it has no Revit-side label to rely on.
+        if (!etabs || (result != null && string.IsNullOrWhiteSpace(result.RevitElementId)))
+            AddPlanLabel(beam.Name, new Point((a.X + b.X) / 2.0, (a.Y + b.Y) / 2.0), 6, -14, etabs ? Brushes.SlateGray : Brushes.SteelBlue);
     }
 
     private void AddColumnVisual(ColumnElement column, bool etabs, Point p)
@@ -778,6 +834,9 @@ public partial class MainWindow : Window
         AttachVisual(ellipse, column.Name, etabs, column.Id, result);
         PlanCanvas.Children.Add(ellipse);
         RegisterPlanShape(result, ellipse);
+
+        if (!etabs || (result != null && string.IsNullOrWhiteSpace(result.RevitElementId)))
+            AddPlanLabel(column.Name, p, radius + 3, -radius - 3, etabs ? Brushes.DarkOrange : Brushes.SteelBlue);
     }
 
     private void RegisterPlanShape(ValidationResult? result, Shape shape)
@@ -787,6 +846,30 @@ public partial class MainWindow : Window
         if (!_planShapesByResult.TryGetValue(result, out var list))
             _planShapesByResult[result] = list = new List<Shape>();
         list.Add(shape);
+    }
+
+    // Draws the member's own name directly on the plan (offset from its anchor
+    // point by dx/dy) so it can be identified at a glance without opening the
+    // results table - this is what "everything in the plan" needs beyond just
+    // color-coded shapes. Gated by the Labels checkbox since it gets busy on a
+    // real-size floor with hundreds of members.
+    private void AddPlanLabel(string name, Point anchor, double dx, double dy, Brush color)
+    {
+        if (ShowLabels.IsChecked != true || string.IsNullOrWhiteSpace(name))
+            return;
+        var label = new TextBlock
+        {
+            Text = name,
+            FontSize = 10,
+            Foreground = color,
+            Background = Brushes.White,
+            Opacity = 0.92,
+            IsHitTestVisible = false
+        };
+        Canvas.SetLeft(label, anchor.X + dx);
+        Canvas.SetTop(label, anchor.Y + dy);
+        Panel.SetZIndex(label, 50);
+        PlanCanvas.Children.Add(label);
     }
 
     private void AttachVisual(FrameworkElement element, string name, bool etabs, string id, ValidationResult? result)

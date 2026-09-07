@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.11
+- Changed (per user request): the "Current Floor Results" table is now
+  hidden by default so the plan view fills essentially the whole window -
+  it's the primary view now, not a component squeezed above a fixed-height
+  table. Toggle it back with the new "Results Table" button in the plan's
+  top-right corner (or "Hide" in the table's own header once it's open);
+  the table itself, its data, and row-click-to-highlight are unchanged,
+  just not shown until asked for.
+- Added: every column/beam on the plan now gets its own name label drawn
+  directly on the plan (e.g. "B4", "C3"), so members can be identified at
+  a glance without opening the results table at all - only the Revit-side
+  label is drawn for a matched/mismatched pair (the ETABS shape sits
+  almost on top of it, so a second label would just overlap); an
+  ETABS-only "Missing in Revit" member still gets its own label since it
+  has no Revit-side shape to label instead. A new "Labels" checkbox next
+  to Fit/Zoom toggles this off for real-size floors with hundreds of
+  members, where per-member labels would get too busy.
+
 ## 1.0.10
 - Removed the "Export JSON" button and its `ExportJson_Click` handler at the
   user's request. Note for the record: that method itself had no defect -
