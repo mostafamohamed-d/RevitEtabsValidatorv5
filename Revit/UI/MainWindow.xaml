@@ -201,8 +201,7 @@
                 <Button Content="Run Validation" Width="132" Style="{StaticResource PrimaryButtonStyle}" Margin="0,0,8,0" Click="RunValidation_Click"/>
                 <Button Content="Validation Scope…" Width="140" Style="{StaticResource SecondaryButtonStyle}" Margin="0,0,8,0" Click="SelectFloors_Click"/>
                 <Rectangle Width="1" Fill="{StaticResource BorderColorBrush}" Margin="6,4,14,4"/>
-                <Button Content="Export CSV" Width="104" Style="{StaticResource SecondaryButtonStyle}" Margin="0,0,8,0" Click="ExportCsv_Click"/>
-                <Button Content="Export JSON" Width="108" Style="{StaticResource SecondaryButtonStyle}" Click="ExportJson_Click"/>
+                <Button Content="Export CSV" Width="104" Style="{StaticResource SecondaryButtonStyle}" Click="ExportCsv_Click"/>
             </StackPanel>
         </Border>
 

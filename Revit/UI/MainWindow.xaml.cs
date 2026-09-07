@@ -13,7 +13,6 @@ using System.Collections.ObjectModel;
 using System.IO;
 using IOPath = System.IO.Path;
 using System.Text;
-using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -1110,20 +1109,6 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus("CSV export failed: " + ex.Message);
-        }
-    }
-
-    private void ExportJson_Click(object s, RoutedEventArgs e)
-    {
-        try
-        {
-            var path = IOPath.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "RevitEtabsValidation.json");
-            File.WriteAllText(path, JsonSerializer.Serialize(_all, new JsonSerializerOptions { WriteIndented = true }));
-            SetStatus("JSON exported: " + path);
-        }
-        catch (Exception ex)
-        {
-            SetStatus("JSON export failed: " + ex.Message);
         }
     }
 

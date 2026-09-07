@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.10
+- Removed the "Export JSON" button and its `ExportJson_Click` handler at the
+  user's request. Note for the record: that method itself had no defect -
+  the "MainWindow doesn't contain ExportJson_Click" error reported earlier
+  was a cascading symptom of the missing-`using` compile failures fixed in
+  1.0.9 (once one file in the assembly fails to compile, everything else,
+  including this button's own handler, is reported as broken too). CSV
+  export (`Export CSV` / `ExportCsv_Click`) is unaffected and remains the
+  only export path; `_all`'s JSON serialization code is gone with it.
+
 ## 1.0.9
 - Fixed (CRITICAL, net48 build): 17 files across `Core/`, `ETABS/`, and `Revit/`
   (most notably `MainWindow.xaml.cs`, `ModelComparer.cs`, `EtabsConnection.cs`,
