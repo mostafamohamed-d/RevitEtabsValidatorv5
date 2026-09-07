@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.0.8
+- Fixed (HIGH): the floor plan could render blank/near-invisible on the very
+  first validation run. `FitPlan_Click` computed its fit scale from
+  `PlanViewHost.ActualWidth/ActualHeight`, but on the first draw right after
+  `RunValidation_Click` those can still read 0 (WPF hasn't run a layout pass
+  over the newly-populated panel yet). Fitting geometry that can be
+  thousands of mm wide against a 0-sized viewport produces a near-zero
+  scale, and nothing else would trigger a re-fit unless the user happened
+  to resize the window afterward - the plan would just look permanently
+  empty. `FitPlan_Click` now detects a not-yet-laid-out host and retries
+  itself once real layout is available, instead of committing to that fit.
+- Added: clicking a row in the results grid now visually highlights the
+  corresponding member(s) on the plan (a gold glow on both the Revit and
+  ETABS shape for that result), not just the side detail panel - previously
+  only a plan click drove the detail panel, not the reverse.
+- Added: every mismatched member (any status other than Matched) now also
+  gets a translucent red halo behind its type-colored line/circle, so any
+  problem reads as "red" at a glance while the existing per-type legend
+  color (position/elevation/section/rotation/ambiguous) still distinguishes
+  what kind of mismatch it is.
+- Added: a floor/story mapping label at the top of the plan view (e.g.
+  "Level 2 → ETABS "Story2" · Columns 4 Revit / 4 ETABS · Beams 4 Revit / 4
+  ETABS") so it's visible at a glance which ETABS story a Revit level
+  mapped to and how many members are in view.
+- Changed: the plan view and results grid are now separated by a draggable
+  `GridSplitter` (previously the results grid had a fixed 190px height), so
+  the plan can be resized larger; the default window size and the plan's
+  minimum height were also increased.
+
 ## 1.0.7
 - Fixed: `Installer/Install-RevitEtabsValidator.ps1` ran
   `dotnet clean`/`dotnet build ... -f net48` without also passing

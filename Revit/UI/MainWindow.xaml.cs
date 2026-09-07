@@ -15,7 +15,9 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Effects;
 using System.Windows.Shapes;
+using System.Windows.Threading;
 using WpfTextBox = System.Windows.Controls.TextBox;
 using ValidationResult = RevitEtabsValidator.Core.Validation.ValidationResult;
 
@@ -59,6 +61,8 @@ public partial class MainWindow : Window
     private bool _isPanning;
     private bool _planHasContent;
     private bool _ignorePlanResize;
+    private readonly Dictionary<ValidationResult, List<Shape>> _planShapesByResult = new();
+    private readonly List<Shape> _highlightedShapes = new();
 
     public MainWindow(UIApplication uiapp)
     {
@@ -555,7 +559,10 @@ public partial class MainWindow : Window
     {
         PlanFloorList.SelectedIndex = -1;
         PlanCanvas.Children.Clear();
+        _planShapesByResult.Clear();
+        _highlightedShapes.Clear();
         _planHasContent = false;
+        PlanFloorHeaderText.Text = "—";
         SetStatus("Floor view cleared.");
     }
 
@@ -611,9 +618,14 @@ public partial class MainWindow : Window
     private void DrawPlan(string level)
     {
         PlanCanvas.Children.Clear();
+        _planShapesByResult.Clear();
+        _highlightedShapes.Clear();
         _planHasContent = false;
         if (string.IsNullOrWhiteSpace(level))
+        {
+            PlanFloorHeaderText.Text = "—";
             return;
+        }
 
         var mappedStory = _revitToEtabsStory.TryGetValue(level, out var story) ? story : "";
         var revB = _revitBeams.Where(x => string.Equals(x.LevelName, level, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -624,6 +636,9 @@ public partial class MainWindow : Window
         var etaC = string.IsNullOrWhiteSpace(mappedStory)
             ? _etabsColumns.Where(x => string.Equals(x.LevelName, level, StringComparison.OrdinalIgnoreCase)).ToList()
             : _etabsColumns.Where(x => string.Equals(x.LevelName, mappedStory, StringComparison.OrdinalIgnoreCase)).ToList();
+
+        var storyLabel = string.IsNullOrWhiteSpace(mappedStory) ? "no mapped ETABS story" : $"ETABS \"{mappedStory}\"";
+        PlanFloorHeaderText.Text = $"{level}  →  {storyLabel}   ·   Columns {revC.Count} Revit / {etaC.Count} ETABS   ·   Beams {revB.Count} Revit / {etaB.Count} ETABS";
 
         var points = new List<Point3D>();
         points.AddRange(revB.SelectMany(x => new[] { x.StartPoint, x.EndPoint }));
@@ -654,8 +669,16 @@ public partial class MainWindow : Window
         foreach (var c in etaC)
             AddColumnVisual(c, true, Map(c.CenterPoint));
 
-        FitPlan_Click(null, null);
+        // _planHasContent must be set before the fit runs, not after: FitPlan_Click
+        // uses it as its "is there anything to fit" guard. On the very first draw
+        // after the window opens (or after a resize), PlanViewHost may not have been
+        // laid out yet - ActualWidth/Height still read 0 - and FitPlan_Click below
+        // detects that and retries itself once real layout is available, instead of
+        // silently fitting against a placeholder-sized viewport and leaving the plan
+        // permanently tiny/blank (the root cause of the plan appearing empty).
         _planHasContent = true;
+        FitPlan_Click(null, null);
+        HighlightSelectedOnPlan();
     }
 
     // One color per mismatch type (not just a single generic "problem" color) so a
@@ -676,6 +699,28 @@ public partial class MainWindow : Window
     {
         var result = FindResultForPair(beam.Id, etabs);
         var problem = result != null && result.Status != ValidationStatus.Matched;
+
+        // A translucent red halo drawn under the type-colored line makes every
+        // mismatch - of any kind - unmistakably read as "red" at a glance. The
+        // crisp line drawn on top still carries the specific mismatch-type color
+        // (see StatusBrush/the legend), so a Position vs. Section vs. Elevation
+        // problem is still distinguishable without a second click.
+        if (problem)
+        {
+            var halo = new Line
+            {
+                X1 = a.X,
+                Y1 = a.Y,
+                X2 = b.X,
+                Y2 = b.Y,
+                Stroke = Brushes.Red,
+                StrokeThickness = (etabs ? 2.0 : 3.0) + 6,
+                Opacity = 0.30,
+                IsHitTestVisible = false
+            };
+            PlanCanvas.Children.Add(halo);
+        }
+
         var line = new Line
         {
             X1 = a.X,
@@ -691,6 +736,7 @@ public partial class MainWindow : Window
             line.StrokeDashArray = new DoubleCollection { 7, 5 };
         AttachVisual(line, beam.Name, etabs, beam.Id, result);
         PlanCanvas.Children.Add(line);
+        RegisterPlanShape(result, line);
     }
 
     private void AddColumnVisual(ColumnElement column, bool etabs, Point p)
@@ -698,6 +744,23 @@ public partial class MainWindow : Window
         const double radius = 6;
         var result = FindResultForPair(column.Id, etabs);
         var problem = result != null && result.Status != ValidationStatus.Matched;
+
+        if (problem)
+        {
+            const double haloRadius = radius + 5;
+            var halo = new Ellipse
+            {
+                Width = haloRadius * 2,
+                Height = haloRadius * 2,
+                Fill = Brushes.Red,
+                Opacity = 0.30,
+                IsHitTestVisible = false
+            };
+            Canvas.SetLeft(halo, p.X - haloRadius);
+            Canvas.SetTop(halo, p.Y - haloRadius);
+            PlanCanvas.Children.Add(halo);
+        }
+
         var problemBrush = problem ? StatusBrush(result!.Status) : null;
         var ellipse = new Ellipse
         {
@@ -712,6 +775,16 @@ public partial class MainWindow : Window
         Canvas.SetTop(ellipse, p.Y - radius);
         AttachVisual(ellipse, column.Name, etabs, column.Id, result);
         PlanCanvas.Children.Add(ellipse);
+        RegisterPlanShape(result, ellipse);
+    }
+
+    private void RegisterPlanShape(ValidationResult? result, Shape shape)
+    {
+        if (result == null)
+            return;
+        if (!_planShapesByResult.TryGetValue(result, out var list))
+            _planShapesByResult[result] = list = new List<Shape>();
+        list.Add(shape);
     }
 
     private void AttachVisual(FrameworkElement element, string name, bool etabs, string id, ValidationResult? result)
@@ -745,6 +818,7 @@ public partial class MainWindow : Window
             SelectedLocationText.Text = "Revit: —\nETABS: —";
             SelectedDeltaText.Text = "—";
             SelectedReasonText.Text = "Select a beam or column in the plan.";
+            HighlightSelectedOnPlan();
             return;
         }
 
@@ -759,6 +833,35 @@ public partial class MainWindow : Window
         SelectedLocationText.Text = $"Revit: {FormatLocation(revit)}\nETABS: {FormatLocation(etabs)}";
         SelectedDeltaText.Text = $"ΔPos   {_selected.PositionDeltaMm:F1} mm\nΔElev  {_selected.ElevationDeltaMm:F1} mm\nΔW     {_selected.WidthDeltaMm:F1} mm\nΔD     {_selected.DepthDeltaMm:F1} mm\nΔL     {_selected.LengthDeltaMm:F1} mm\nΔRot   {_selected.RotationDeltaDeg:F1}°";
         SelectedReasonText.Text = BuildReason(_selected, revit, etabs);
+        HighlightSelectedOnPlan();
+    }
+
+    // Keeps the plan in sync with whichever member is "selected" - by a plan click
+    // (PlanVisual_Click) or a results-grid row click (FloorResultsGrid_SelectionChanged)
+    // both funnel through UpdateSelectedPanel, so either path highlights the same
+    // Revit+ETABS pair of shapes on the plan with a glow, not just the side panel text.
+    private void HighlightSelectedOnPlan()
+    {
+        foreach (var shape in _highlightedShapes)
+            shape.Effect = null;
+        _highlightedShapes.Clear();
+
+        if (_selected == null || !_planShapesByResult.TryGetValue(_selected, out var shapes))
+            return;
+
+        var glow = new DropShadowEffect
+        {
+            Color = Colors.Gold,
+            BlurRadius = 20,
+            ShadowDepth = 0,
+            Opacity = 1.0
+        };
+        foreach (var shape in shapes)
+        {
+            shape.Effect = glow;
+            Panel.SetZIndex(shape, 100);
+            _highlightedShapes.Add(shape);
+        }
     }
 
     private ElementBase? GetRevitElement(ValidationResult r)
@@ -873,8 +976,21 @@ public partial class MainWindow : Window
 
     private void FitPlan_Click(object? s, RoutedEventArgs? e)
     {
-        if (!_planHasContent && (PlanCanvas.Width <= 0 || PlanCanvas.Height <= 0))
+        if (!_planHasContent)
             return;
+
+        // PlanViewHost may not have been arranged yet (e.g. the very first draw
+        // right after RunValidation_Click, before WPF has run a layout pass over
+        // this newly-populated panel) - ActualWidth/Height would read 0 here.
+        // Fitting against that produces a near-zero scale that makes the whole
+        // plan invisible, and nothing else would ever trigger a re-fit unless the
+        // user happens to resize the window afterward. Retry once real layout is
+        // available instead of silently committing to a bad fit.
+        if (PlanViewHost.ActualWidth <= 1 || PlanViewHost.ActualHeight <= 1)
+        {
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => FitPlan_Click(null, null)));
+            return;
+        }
 
         var viewW = Math.Max(100, PlanViewHost.ActualWidth - 30);
         var viewH = Math.Max(100, PlanViewHost.ActualHeight - 30);
