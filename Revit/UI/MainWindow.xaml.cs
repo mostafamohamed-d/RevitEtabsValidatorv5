@@ -666,6 +666,34 @@ public partial class MainWindow : Window
             ? string.Equals(x.EtabsElementId, id, StringComparison.OrdinalIgnoreCase)
             : string.Equals(x.RevitElementId, id, StringComparison.OrdinalIgnoreCase));
 
+    private static bool IsFinite(Point3D p)
+        => !double.IsNaN(p.X) && !double.IsInfinity(p.X) &&
+           !double.IsNaN(p.Y) && !double.IsInfinity(p.Y);
+
+    // If the Revit and ETABS members on the same floor sit in plan positions whose
+    // centroids are metres apart, no per-member tolerance will ever match them -
+    // the two models are not in a common plan coordinate system (Revit Internal
+    // Origin vs. ETABS Global, per the project's coordinate contract). That shows
+    // up as "everything Missing, nothing Matched" no matter how far the tolerances
+    // are opened up, so it is called out on the plan itself rather than leaving the
+    // engineer to infer it from a wall of Missing rows.
+    private static string PlanOriginWarning(IReadOnlyList<Point3D> revitPoints, IReadOnlyList<Point3D> etabsPoints)
+    {
+        if (revitPoints.Count == 0 || etabsPoints.Count == 0)
+            return "";
+
+        var dx = revitPoints.Average(p => p.X) - etabsPoints.Average(p => p.X);
+        var dy = revitPoints.Average(p => p.Y) - etabsPoints.Average(p => p.Y);
+        var offset = Math.Sqrt(dx * dx + dy * dy);
+
+        // A metre of centroid difference is far beyond any plausible modelling
+        // tolerance but still well inside "different layout on the same grid",
+        // so it is reported as a coordinate-system warning, not a member mismatch.
+        return offset <= 1000.0
+            ? ""
+            : $"   ·   ⚠ Revit/ETABS plan centroids differ by {offset / 1000.0:F1} m (ΔX {dx / 1000.0:F1}, ΔY {dy / 1000.0:F1}) - check the coordinate setup, not the tolerances";
+    }
+
     private void DrawPlan(string level)
     {
         PlanCanvas.Children.Clear();
@@ -689,16 +717,21 @@ public partial class MainWindow : Window
             : _etabsColumns.Where(x => string.Equals(x.LevelName, mappedStory, StringComparison.OrdinalIgnoreCase)).ToList();
 
         var storyLabel = string.IsNullOrWhiteSpace(mappedStory) ? "no mapped ETABS story" : $"ETABS \"{mappedStory}\"";
-        PlanFloorHeaderText.Text = $"{level}  →  {storyLabel}   ·   Columns {revC.Count} Revit / {etaC.Count} ETABS   ·   Beams {revB.Count} Revit / {etaB.Count} ETABS";
 
-        var points = new List<Point3D>();
-        points.AddRange(revB.SelectMany(x => new[] { x.StartPoint, x.EndPoint }));
-        points.AddRange(etaB.SelectMany(x => new[] { x.StartPoint, x.EndPoint }));
-        points.AddRange(revC.Select(x => x.CenterPoint));
-        points.AddRange(etaC.Select(x => x.CenterPoint));
+        // Garbage coordinates (NaN/Infinity from a failed read) would otherwise
+        // poison Min/Max and make the whole canvas un-renderable, so they are kept
+        // out of the bounds calculation.
+        var revitPoints = revB.SelectMany(x => new[] { x.StartPoint, x.EndPoint })
+            .Concat(revC.Select(x => x.CenterPoint)).Where(IsFinite).ToList();
+        var etabsPoints = etaB.SelectMany(x => new[] { x.StartPoint, x.EndPoint })
+            .Concat(etaC.Select(x => x.CenterPoint)).Where(IsFinite).ToList();
+        var points = revitPoints.Concat(etabsPoints).ToList();
 
         if (points.Count == 0)
+        {
+            PlanFloorHeaderText.Text = $"{level}  →  {storyLabel}   ·   nothing to draw on this floor";
             return;
+        }
 
         var minX = points.Min(p => p.X);
         var maxX = points.Max(p => p.X);
@@ -706,10 +739,25 @@ public partial class MainWindow : Window
         var maxY = points.Max(p => p.Y);
         var worldW = Math.Max(1, maxX - minX);
         var worldH = Math.Max(1, maxY - minY);
-        PlanCanvas.Width = worldW + 40;
-        PlanCanvas.Height = worldH + 40;
 
-        Point Map(Point3D p) => new(p.X - minX + 20, maxY - p.Y + 20);
+        // The canvas coordinate system is NORMALIZED, not millimetres. This matters:
+        // member glyphs are sized in screen pixels (column radius 6, beam stroke 3,
+        // label font 10), and the whole canvas is then scaled by the fit transform.
+        // When the canvas was in raw mm, a real floor ~120 m across gave a fit scale
+        // of ~0.01, so a "6" column rendered at 0.06 px and a "3" beam line at
+        // 0.03 px - everything drawn correctly, and everything invisible. Scaling
+        // the plan into a fixed extent here keeps the fit scale near 1.0, so those
+        // pixel sizes stay pixel sizes whatever the real building measures.
+        const double PlanCanvasExtent = 1000.0;
+        var worldScale = PlanCanvasExtent / Math.Max(worldW, worldH);
+        PlanCanvas.Width = worldW * worldScale + 40;
+        PlanCanvas.Height = worldH * worldScale + 40;
+
+        PlanFloorHeaderText.Text =
+            $"{level}  →  {storyLabel}   ·   Columns {revC.Count} Revit / {etaC.Count} ETABS   ·   Beams {revB.Count} Revit / {etaB.Count} ETABS" +
+            $"   ·   Extent {worldW / 1000.0:F1} × {worldH / 1000.0:F1} m{PlanOriginWarning(revitPoints, etabsPoints)}";
+
+        Point Map(Point3D p) => new((p.X - minX) * worldScale + 20, (maxY - p.Y) * worldScale + 20);
 
         foreach (var b in revB)
             AddBeamVisual(b, false, Map(b.StartPoint), Map(b.EndPoint));

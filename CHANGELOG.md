@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.0.12
+- Fixed (CRITICAL - this is why the plan looked empty): `DrawPlan` built the
+  plan canvas in raw model millimetres (`PlanCanvas.Width = worldW + 40`,
+  `Map()` returning mm), while every member glyph was sized as if the canvas
+  were in screen pixels - column `radius = 6`, beam `StrokeThickness = 3`,
+  label `FontSize = 10`. Those are 6 mm, 3 mm and 10 mm **in the building**.
+  Fitting a real floor (~120 m across) into a ~1200 px viewport gives a scale
+  of ~0.01, so the column circles rendered at 0.06 px and the beam lines at
+  0.03 px: drawn correctly, and far below one pixel at any zoom. The canvas
+  is now normalized to a fixed 1000-unit extent, so the fit scale stays near
+  1.0 and those pixel sizes remain pixel sizes regardless of how large the
+  real building is. Earlier fixes to this view (the layout-timing re-fit, the
+  labels, the halos) were all real, but none of them could show anything
+  while every glyph was sub-pixel.
+- Added: non-finite (NaN/Infinity) coordinates are now excluded from the plan
+  bounds calculation. A single bad coordinate from a failed read would
+  otherwise propagate through Min/Max into `PlanCanvas.Width`, leaving the
+  whole canvas un-renderable.
+- Added: the plan header now reports the floor's real extent in metres, and
+  warns when the Revit and ETABS members on that floor have plan centroids
+  more than 1 m apart - e.g. "⚠ Revit/ETABS plan centroids differ by 45.3 m".
+  That condition produces "everything Missing, nothing Matched" regardless of
+  how far the tolerances are opened, because the two models are not in a
+  common plan coordinate system; it is a coordinate-setup problem, not a
+  per-member tolerance problem, and it is now visible on the plan itself
+  instead of having to be inferred from a wall of Missing rows.
+
 ## 1.0.11
 - Changed (per user request): the "Current Floor Results" table is now
   hidden by default so the plan view fills essentially the whole window -
