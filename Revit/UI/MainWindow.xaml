@@ -348,7 +348,8 @@
                 </Grid>
             </Border>
 
-            <Border Grid.Column="1" Style="{StaticResource CardStyle}" ClipToBounds="True" x:Name="PlanViewHost">
+            <Border Grid.Column="1" Style="{StaticResource CardStyle}" ClipToBounds="True" x:Name="PlanViewHost"
+                    MouseUp="PlanViewHost_MouseUp" LostMouseCapture="PlanViewHost_LostMouseCapture">
                 <Grid>
                     <Border Background="White" BorderBrush="{StaticResource BorderColorBrush}" BorderThickness="1" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="10" Padding="10,6" CornerRadius="4" Panel.ZIndex="5">
                         <TextBlock x:Name="PlanFloorHeaderText" Text="—" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}"/>
@@ -359,7 +360,10 @@
                     <Canvas x:Name="PlanCanvas" Background="Transparent" MouseWheel="PlanCanvas_MouseWheel" MouseDown="PlanCanvas_MouseDown" MouseMove="PlanCanvas_MouseMove" MouseUp="PlanCanvas_MouseUp" SizeChanged="PlanCanvas_SizeChanged"/>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="10" Panel.ZIndex="5">
                         <Border Background="White" BorderBrush="{StaticResource BorderColorBrush}" BorderThickness="1" CornerRadius="4" Padding="8,5" Margin="0,0,6,0">
-                            <CheckBox x:Name="ShowLabels" Content="Labels" IsChecked="True" FontSize="12" Checked="ShowLabels_Changed" Unchecked="ShowLabels_Changed"/>
+                            <StackPanel Orientation="Horizontal">
+                                <CheckBox x:Name="ShowLabels" Content="Labels" IsChecked="True" FontSize="12" Checked="ShowLabels_Changed" Unchecked="ShowLabels_Changed" Margin="0,0,10,0"/>
+                                <CheckBox x:Name="ProblemsOnly" Content="Problems only" IsChecked="False" FontSize="12" Checked="ShowLabels_Changed" Unchecked="ShowLabels_Changed"/>
+                            </StackPanel>
                         </Border>
                         <Button x:Name="ToggleResultsButton" Content="Results Table ▾" Width="120" Style="{StaticResource CompactButtonStyle}" Margin="0,0,6,0" Click="ToggleResultsTable_Click"/>
                         <Button Content="Fit" Width="52" Style="{StaticResource CompactButtonStyle}" Margin="0,0,6,0" Click="FitPlan_Click"/>
@@ -367,6 +371,19 @@
                         <Button Content="+" Width="32" Style="{StaticResource CompactButtonStyle}" Margin="0,0,6,0" Click="ZoomIn_Click"/>
                         <Border Background="White" BorderBrush="{StaticResource BorderColorBrush}" BorderThickness="1" Padding="9,5" CornerRadius="4"><TextBlock x:Name="ZoomText" Text="100%" FontSize="12"/></Border>
                     </StackPanel>
+                    <!-- Issue navigator: what the problems are on this floor, and a way
+                         to step through them one by one instead of hunting for a red
+                         member somewhere on a 126 m plan. -->
+                    <Border x:Name="PlanIssuesBar" Background="White" BorderBrush="{StaticResource BorderColorBrush}" BorderThickness="1"
+                            CornerRadius="4" Padding="10,6" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="12" Panel.ZIndex="6">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="PlanIssuesText" Text="No issues on this floor" FontSize="12" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <Button x:Name="PrevIssueButton" Content="◀ Prev" Width="66" Style="{StaticResource CompactButtonStyle}" Margin="0,0,6,0" Click="PrevIssue_Click"/>
+                            <TextBlock x:Name="PlanIssuePositionText" Text="—" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" MinWidth="62" TextAlignment="Center"/>
+                            <Button x:Name="NextIssueButton" Content="Next ▶" Width="66" Style="{StaticResource CompactButtonStyle}" Margin="6,0,0,0" Click="NextIssue_Click"/>
+                        </StackPanel>
+                    </Border>
+
                     <StackPanel HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12" Panel.ZIndex="5">
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                             <Border Background="White" BorderBrush="{StaticResource BorderColorBrush}" BorderThickness="1" CornerRadius="4" Padding="9,6" Margin="0,0,6,0"><TextBlock FontSize="12"><Run Text="Revit" FontWeight="Bold"/><Run Text="  ━"/></TextBlock></Border>

@@ -65,6 +65,14 @@ public partial class MainWindow : Window
     private bool _ignorePlanResize;
     private readonly Dictionary<ValidationResult, List<Shape>> _planShapesByResult = new();
     private readonly List<Shape> _highlightedShapes = new();
+    private readonly Dictionary<string, ValidationResult> _resultByRevitId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ValidationResult> _resultByEtabsId = new(StringComparer.OrdinalIgnoreCase);
+
+    // Canvas anchor per result, so "go to the next issue" can centre the view on a
+    // member instead of leaving the engineer to hunt for it on a 126 m floor.
+    private readonly Dictionary<ValidationResult, Point> _planAnchorByResult = new();
+    private List<ValidationResult> _planIssues = new();
+    private int _planIssueIndex = -1;
 
     // The results table starts hidden (see ResultsSplitterRow/ResultsGridRow in
     // XAML, both Height="0") so the plan is the primary, full-height view; these
@@ -408,6 +416,7 @@ public partial class MainWindow : Window
                 .ToList();
 
             NormalizeEtabsOnlyResultLevels();
+            RebuildResultIndex();
             UpdateSummary();
             PopulatePlanFloors();
             if (PlanFloorList.Items.Count > 0)
@@ -606,14 +615,91 @@ public partial class MainWindow : Window
         DrawPlan(PlanFloorList.SelectedItem?.ToString() ?? "");
     }
 
+    private void NextIssue_Click(object s, RoutedEventArgs e) => GoToIssue(_planIssueIndex + 1);
+
+    private void PrevIssue_Click(object s, RoutedEventArgs e) => GoToIssue(_planIssueIndex - 1);
+
+    // Steps through this floor's problems in severity order, selecting each one and
+    // centring the plan on it. Without this, "997 errors" on a 126 m floor gives no
+    // way to actually reach a specific problem member.
+    private void GoToIssue(int index)
+    {
+        if (_planIssues.Count == 0)
+            return;
+
+        _planIssueIndex = ((index % _planIssues.Count) + _planIssues.Count) % _planIssues.Count;
+        var result = _planIssues[_planIssueIndex];
+
+        _selected = result;
+        SyncGridSelection(result);
+        UpdateSelectedPanel();
+        CenterOnResult(result);
+        UpdatePlanIssueUi();
+        SetStatus($"Issue {_planIssueIndex + 1} of {_planIssues.Count}: {result.ElementType} {result.RevitName ?? result.EtabsName} - {result.Status}");
+    }
+
+    private void CenterOnResult(ValidationResult result)
+    {
+        if (!_planAnchorByResult.TryGetValue(result, out var anchor))
+            return;
+        if (PlanViewHost.ActualWidth <= 1 || PlanViewHost.ActualHeight <= 1)
+            return;
+
+        var scale = Math.Max(1e-9, _fitScale * _zoom);
+        _pan = new Point(PlanViewHost.ActualWidth / 2.0 - anchor.X * scale,
+                         PlanViewHost.ActualHeight / 2.0 - anchor.Y * scale);
+        ApplyPlanTransform();
+    }
+
+    // Names WHAT is wrong on this floor (counts per status), which is what turns a
+    // bare "997 errors" total into something actionable.
+    private void UpdatePlanIssueUi()
+    {
+        var hasIssues = _planIssues.Count > 0;
+        PrevIssueButton.IsEnabled = hasIssues;
+        NextIssueButton.IsEnabled = hasIssues;
+
+        if (!hasIssues)
+        {
+            PlanIssuesText.Text = _planHasContent ? "No issues on this floor" : "No issues";
+            PlanIssuePositionText.Text = "—";
+            return;
+        }
+
+        var breakdown = string.Join("  ·  ", _planIssues
+            .GroupBy(x => x.Status)
+            .OrderByDescending(g => g.Count())
+            .Select(g => $"{DescribeStatus(g.Key)} {g.Count()}"));
+
+        PlanIssuesText.Text = $"⚠ {_planIssues.Count} issue(s):  {breakdown}";
+        PlanIssuePositionText.Text = _planIssueIndex < 0 ? $"– / {_planIssues.Count}" : $"{_planIssueIndex + 1} / {_planIssues.Count}";
+    }
+
+    private static string DescribeStatus(ValidationStatus status) => status switch
+    {
+        ValidationStatus.MissingInEtabs => "Missing in ETABS",
+        ValidationStatus.MissingInRevit => "Missing in Revit",
+        ValidationStatus.PositionMismatch => "Position",
+        ValidationStatus.ElevationMismatch => "Elevation",
+        ValidationStatus.SectionMismatch => "Section",
+        ValidationStatus.RotationMismatch => "Rotation",
+        ValidationStatus.GeometryMismatch => "Geometry",
+        ValidationStatus.AmbiguousMatch => "Ambiguous",
+        _ => status.ToString()
+    };
+
     private void ClearFloorView_Click(object s, RoutedEventArgs e)
     {
         PlanFloorList.SelectedIndex = -1;
         PlanCanvas.Children.Clear();
         _planShapesByResult.Clear();
         _highlightedShapes.Clear();
+        _planAnchorByResult.Clear();
+        _planIssues = new List<ValidationResult>();
+        _planIssueIndex = -1;
         _planHasContent = false;
         PlanFloorHeaderText.Text = "—";
+        UpdatePlanIssueUi();
         SetStatus("Floor view cleared.");
     }
 
@@ -661,10 +747,28 @@ public partial class MainWindow : Window
         => _all.FirstOrDefault(x => string.Equals(x.RevitElementId, id, StringComparison.OrdinalIgnoreCase) ||
                                      string.Equals(x.EtabsElementId, id, StringComparison.OrdinalIgnoreCase));
 
+    // Indexed rather than scanned: this is called once per drawn member, and a
+    // linear FirstOrDefault over _all made a floor with ~1000 members cost ~1M
+    // string comparisons per redraw (far worse on a 16k-beam model), which is
+    // paid again on every floor switch, zoom-triggered redraw and label toggle.
+    private void RebuildResultIndex()
+    {
+        _resultByRevitId.Clear();
+        _resultByEtabsId.Clear();
+        foreach (var result in _all)
+        {
+            if (!string.IsNullOrWhiteSpace(result.RevitElementId))
+                _resultByRevitId[result.RevitElementId!] = result;
+            if (!string.IsNullOrWhiteSpace(result.EtabsElementId))
+                _resultByEtabsId[result.EtabsElementId!] = result;
+        }
+    }
+
     private ValidationResult? FindResultForPair(string id, bool etabs)
-        => _all.FirstOrDefault(x => etabs
-            ? string.Equals(x.EtabsElementId, id, StringComparison.OrdinalIgnoreCase)
-            : string.Equals(x.RevitElementId, id, StringComparison.OrdinalIgnoreCase));
+    {
+        var index = etabs ? _resultByEtabsId : _resultByRevitId;
+        return index.TryGetValue(id, out var result) ? result : null;
+    }
 
     // A metre of centroid difference is far beyond any plausible modelling tolerance
     // but still well within "same building, different origin", so it is reported as
@@ -685,10 +789,14 @@ public partial class MainWindow : Window
         PlanCanvas.Children.Clear();
         _planShapesByResult.Clear();
         _highlightedShapes.Clear();
+        _planAnchorByResult.Clear();
+        _planIssues = new List<ValidationResult>();
+        _planIssueIndex = -1;
         _planHasContent = false;
         if (string.IsNullOrWhiteSpace(level))
         {
             PlanFloorHeaderText.Text = "—";
+            UpdatePlanIssueUi();
             return;
         }
 
@@ -736,14 +844,35 @@ public partial class MainWindow : Window
             return new Point(mapped.X, mapped.Y);
         }
 
-        foreach (var b in revB)
+        // "Problems only" hides members that passed, so the failures aren't lost in
+        // a field of matched geometry. Members with no result at all are kept: an
+        // unvalidated member is a question, not a pass.
+        bool Include(string id, bool etabs)
+        {
+            if (ProblemsOnly.IsChecked != true)
+                return true;
+            var result = FindResultForPair(id, etabs);
+            return result == null || result.Status != ValidationStatus.Matched;
+        }
+
+        foreach (var b in revB.Where(x => Include(x.Id, false)))
             AddBeamVisual(b, false, Map(b.StartPoint), Map(b.EndPoint));
-        foreach (var b in etaB)
+        foreach (var b in etaB.Where(x => Include(x.Id, true)))
             AddBeamVisual(b, true, Map(b.StartPoint), Map(b.EndPoint));
-        foreach (var c in revC)
+        foreach (var c in revC.Where(x => Include(x.Id, false)))
             AddColumnVisual(c, false, Map(c.CenterPoint));
-        foreach (var c in etaC)
+        foreach (var c in etaC.Where(x => Include(x.Id, true)))
             AddColumnVisual(c, true, Map(c.CenterPoint));
+
+        // Ordered most-severe-first so stepping through issues starts with what
+        // actually matters, and stably by name so the order is reproducible.
+        _planIssues = _planAnchorByResult.Keys
+            .Where(x => x.Status != ValidationStatus.Matched)
+            .OrderByDescending(x => x.Severity)
+            .ThenBy(x => x.ElementType, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.RevitName ?? x.EtabsName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _planIssueIndex = -1;
 
         // _planHasContent must be set before the fit runs, not after: FitPlan_Click
         // uses it as its "is there anything to fit" guard. On the very first draw
@@ -755,6 +884,7 @@ public partial class MainWindow : Window
         _planHasContent = true;
         FitPlan_Click(null, null);
         HighlightSelectedOnPlan();
+        UpdatePlanIssueUi();
     }
 
     // One color per mismatch type (not just a single generic "problem" color) so a
@@ -810,9 +940,24 @@ public partial class MainWindow : Window
         };
         if (etabs)
             line.StrokeDashArray = new DoubleCollection { 7, 5 };
-        AttachVisual(line, beam.Name, etabs, beam.Id, result);
         PlanCanvas.Children.Add(line);
         RegisterPlanShape(result, line);
+        RegisterPlanAnchor(result, new Point((a.X + b.X) / 2.0, (a.Y + b.Y) / 2.0));
+
+        // A 2-3 px stroke is close to unclickable, so the click target is a separate
+        // transparent line laid over it. Transparent (unlike null) is hit-testable
+        // in WPF, so this widens the target to ~14 px without changing the drawing.
+        var hit = new Line
+        {
+            X1 = a.X,
+            Y1 = a.Y,
+            X2 = b.X,
+            Y2 = b.Y,
+            Stroke = Brushes.Transparent,
+            StrokeThickness = 14
+        };
+        AttachVisual(hit, beam, etabs, result);
+        PlanCanvas.Children.Add(hit);
 
         // Only label the Revit side of a matched/mismatched pair - the ETABS shape
         // for that same result sits almost on top of it, so a second label there
@@ -856,9 +1001,23 @@ public partial class MainWindow : Window
         };
         Canvas.SetLeft(ellipse, p.X - radius);
         Canvas.SetTop(ellipse, p.Y - radius);
-        AttachVisual(ellipse, column.Name, etabs, column.Id, result);
         PlanCanvas.Children.Add(ellipse);
         RegisterPlanShape(result, ellipse);
+        RegisterPlanAnchor(result, p);
+
+        // Same reasoning as the beam hit line: a transparent, larger click target
+        // over the glyph, so selecting a column doesn't demand pixel accuracy.
+        const double hitRadius = radius + 5;
+        var hit = new Ellipse
+        {
+            Width = hitRadius * 2,
+            Height = hitRadius * 2,
+            Fill = Brushes.Transparent
+        };
+        Canvas.SetLeft(hit, p.X - hitRadius);
+        Canvas.SetTop(hit, p.Y - hitRadius);
+        AttachVisual(hit, column, etabs, result);
+        PlanCanvas.Children.Add(hit);
 
         if (!etabs || (result != null && string.IsNullOrWhiteSpace(result.RevitElementId)))
             AddPlanLabel(column.Name, p, radius + 3, -radius - 3, etabs ? Brushes.DarkOrange : Brushes.SteelBlue);
@@ -871,6 +1030,15 @@ public partial class MainWindow : Window
         if (!_planShapesByResult.TryGetValue(result, out var list))
             _planShapesByResult[result] = list = new List<Shape>();
         list.Add(shape);
+    }
+
+    // The Revit side wins when both are drawn, so "go to issue" centres on the
+    // Revit member where one exists and on the ETABS member otherwise.
+    private void RegisterPlanAnchor(ValidationResult? result, Point anchor)
+    {
+        if (result == null || _planAnchorByResult.ContainsKey(result))
+            return;
+        _planAnchorByResult[result] = anchor;
     }
 
     // Draws the member's own name directly on the plan (offset from its anchor
@@ -897,23 +1065,64 @@ public partial class MainWindow : Window
         PlanCanvas.Children.Add(label);
     }
 
-    private void AttachVisual(FrameworkElement element, string name, bool etabs, string id, ValidationResult? result)
+    // What a plan click resolves to. Carrying the element itself (not just the
+    // ValidationResult) means a member with NO result - which used to leave the
+    // shape completely inert, clicking it doing nothing at all - can still report
+    // what it is and why it has no result.
+    private sealed record PlanPick(ValidationResult? Result, ElementBase Element, bool IsEtabs);
+
+    private void AttachVisual(FrameworkElement element, ElementBase source, bool etabs, ValidationResult? result)
     {
         element.Cursor = Cursors.Hand;
-        var statusNote = result != null && result.Status != ValidationStatus.Matched ? $"\n{result.Status}" : "";
-        element.ToolTip = etabs ? $"ETABS: {name}\nID: {id}{statusNote}\nClick for coordination details" : $"Revit: {name}\nID: {id}{statusNote}\nClick for coordination details";
+        element.Tag = new PlanPick(result, source, etabs);
+        var side = etabs ? "ETABS" : "Revit";
+        var statusNote = result == null
+            ? "\nNo validation result for this member"
+            : result.Status == ValidationStatus.Matched ? "\nMatched" : $"\n{result.Status}";
+        element.ToolTip = $"{side}: {source.Name}\nID: {source.Id}{statusNote}\nClick to select · double-click for full details";
         element.MouseLeftButtonDown += PlanVisual_Click;
     }
 
+    // Single click selects (updates the side panel and highlights on the plan);
+    // double-click opens the details dialog. Previously every single click threw up
+    // a modal, and a click on a member without a result did nothing whatsoever.
     private void PlanVisual_Click(object sender, MouseButtonEventArgs e)
     {
-        if (sender is FrameworkElement element && element.Tag is ValidationResult result)
+        if (sender is not FrameworkElement element || element.Tag is not PlanPick pick)
+            return;
+
+        e.Handled = true;
+
+        if (pick.Result == null)
         {
-            _selected = result;
+            _selected = null;
             UpdateSelectedPanel();
-            OpenDetails(result);
-            e.Handled = true;
+            var side = pick.IsEtabs ? "ETABS" : "Revit";
+            SelectedTypeText.Text = $"{side}: {pick.Element.Name}";
+            SelectedStatusText.Text = "No validation result for this member";
+            SelectedReasonText.Text =
+                $"This {side} member was drawn from the model but no comparison result references its id ({pick.Element.Id}). " +
+                "That normally means it was outside the validated scope - check that the floor selected in Validation Scope covers this level.";
+            SetStatus($"{side} member {pick.Element.Name} has no validation result (outside the validated scope?).");
+            return;
         }
+
+        _selected = pick.Result;
+        SyncGridSelection(pick.Result);
+        UpdateSelectedPanel();
+
+        if (e.ClickCount >= 2)
+            OpenDetails(pick.Result);
+    }
+
+    // Keeps the results table in step with a plan click, so the two views never
+    // disagree about which member is selected.
+    private void SyncGridSelection(ValidationResult result)
+    {
+        if (!_floorVisible.Contains(result))
+            return;
+        if (!ReferenceEquals(FloorResultsGrid.SelectedItem, result))
+            FloorResultsGrid.SelectedItem = result;
     }
 
     private void UpdateSelectedPanel()
@@ -1171,14 +1380,36 @@ public partial class MainWindow : Window
         ApplyPlanTransform();
     }
 
+    // Capture is taken on PlanViewHost (the Border), so while a middle-drag pan is
+    // active the mouse events route to PlanViewHost - the Canvas handler below may
+    // never see the release at all. Ending the pan on any button-up, plus the
+    // LostMouseCapture safety net, prevents the state this used to get stuck in:
+    // _isPanning left true with capture still held by the Border, after which every
+    // click landed on the Border instead of a member and nothing in the plan could
+    // be selected again until the window was reopened.
     private void PlanCanvas_MouseUp(object s, MouseButtonEventArgs e)
     {
-        if (_isPanning && e.ChangedButton == MouseButton.Middle)
-        {
-            _isPanning = false;
+        if (!_isPanning)
+            return;
+        EndPan();
+        e.Handled = true;
+    }
+
+    private void PlanViewHost_MouseUp(object s, MouseButtonEventArgs e)
+    {
+        if (!_isPanning)
+            return;
+        EndPan();
+        e.Handled = true;
+    }
+
+    private void PlanViewHost_LostMouseCapture(object s, MouseEventArgs e) => _isPanning = false;
+
+    private void EndPan()
+    {
+        _isPanning = false;
+        if (PlanViewHost.IsMouseCaptured)
             PlanViewHost.ReleaseMouseCapture();
-            e.Handled = true;
-        }
     }
 
     private void PlanCanvas_SizeChanged(object s, SizeChangedEventArgs e)

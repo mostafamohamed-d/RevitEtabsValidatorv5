@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.0.14
+- Fixed (HIGH - "can't select anything in the plan"): the middle-drag pan
+  took the mouse capture on `PlanViewHost` (the Border) but handled
+  `MouseUp` on `PlanCanvas`. While capture is held, events route to the
+  Border, so the Canvas handler could never see the release - leaving
+  `_isPanning` true with the capture still held. From that point every
+  click landed on the Border instead of a member, and nothing in the plan
+  could be selected again for the life of the window. The pan now ends on
+  any button-up, on the host as well as the canvas, with a
+  `LostMouseCapture` safety net.
+- Fixed: a member whose id matched no comparison result had `Tag = null`,
+  so clicking it did nothing at all - no selection, no message, no clue
+  why. Clicks now always respond; an unmatched member reports what it is
+  and that it was probably outside the validated scope.
+- Fixed: beam click targets were the 2-3 px stroke itself, effectively
+  unhittable. Each beam and column now carries a transparent oversized hit
+  shape (~14 px for beams), so selection no longer demands pixel accuracy.
+- Changed: a single click now selects (side panel + plan highlight) and
+  double-click opens the details dialog. Previously every single click
+  threw up a modal. A plan click also selects the matching row in the
+  results table, so the two views cannot disagree.
+- Fixed (performance): `FindResultForPair` scanned all results linearly for
+  every drawn member - ~1M string comparisons per redraw on a 1000-member
+  floor, repeated on every floor switch, label toggle and re-fit. Results
+  are now indexed by id once per validation run.
+- Added ("what are the errors, and where"): an issue navigator on the plan.
+  It names the breakdown for the current floor (e.g. "⚠ 585 issue(s):
+  Missing in ETABS 401 · Missing in Revit 184") and steps through them
+  most-severe-first with Prev/Next, selecting each member and centring the
+  view on it - which is the only practical way to reach a specific problem
+  member on a 126 m floor. Also adds a "Problems only" filter that hides
+  members that passed; members with no result are kept, since an
+  unvalidated member is a question rather than a pass.
+
 ## 1.0.13
 - Moved the floor-plan coordinate mapping out of `MainWindow.xaml.cs` into
   `Core/Geometry/PlanProjection.cs` and added 14 regression tests for it
