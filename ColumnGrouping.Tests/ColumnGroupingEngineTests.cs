@@ -28,21 +28,21 @@ namespace ColumnGrouping.Tests
         public void BarCountRule_MatchesAgreedValues(double dimension, int expected)
         {
             var calc = new ReinforcementCalculator(Settings());
-            // Select ratio low enough that diameter selection does not affect the bar-count assertion.
             var result = calc.Calculate(dimension, 200, 0.001);
-
-            Assert.Equal(expected, result.BarsAlongLength == expected ? result.BarsAlongLength : result.BarsAlongWidth);
+            int actual = result.BarsAlongLength == expected ? result.BarsAlongLength : result.BarsAlongWidth;
+            Assert.Equal(expected, actual);
         }
 
         [Fact]
-        public void TotalBars_400x1000_Is24()
+        public void TotalBars_400x1000_FollowsCurrentBracketRule()
         {
             var calc = new ReinforcementCalculator(Settings());
             var r = calc.Calculate(400, 1000, 0.02);
 
             Assert.Equal(4, r.BarsAlongWidth);
             Assert.Equal(9, r.BarsAlongLength);
-            // According to the current formula and bracket rule, 1000 -> rounded 1000 -> 9.
+            // Current Phase-1 prompt supersedes the earlier 1000 -> 10 rule:
+            // rounded 1000 >= 500, so 1000/100 - 1 = 9.
             Assert.Equal(22, r.TotalBars);
         }
 
@@ -70,9 +70,10 @@ namespace ColumnGrouping.Tests
             var columns = recon.Reconstruct(segments);
 
             Assert.Single(columns);
-            Assert.Single(columns[0].Segments);
-            Assert.Equal(1, columns[0].ContinuityLinks.Count);
+            Assert.Equal(2, columns[0].Segments.Count);
+            Assert.Single(columns[0].ContinuityLinks);
             Assert.Equal(ContinuityStatus.Connected, columns[0].ContinuityLinks[0].Status);
+            Assert.Empty(columns[0].ContinuityWarnings);
         }
 
         [Fact]
@@ -88,6 +89,7 @@ namespace ColumnGrouping.Tests
             var columns = recon.Reconstruct(segments);
 
             Assert.Single(columns);
+            Assert.Equal(2, columns[0].Segments.Count);
             Assert.Equal(ContinuityStatus.ConnectedWithWarning, columns[0].ContinuityLinks[0].Status);
             Assert.Single(columns[0].ContinuityWarnings);
         }
@@ -108,13 +110,13 @@ namespace ColumnGrouping.Tests
         }
 
         [Fact]
-        public void Grouping_SameLevelsAndProfile_GroupsTogether()
+        public void Grouping_SameLevelsAndProfileWithinRftTolerance_GroupsTogether()
         {
             var engine = new ColumnGroupingEngine(Settings());
             var segments = new List<ColumnSegment>
             {
-                Segment("A1", "L1", 0, 3000, 0, 0, 0, 0, 400, 600, 0.02),
-                Segment("A2", "L2", 3000, 6000, 0, 0, 0, 0, 400, 600, 0.02),
+                Segment("A1", "L1", 0, 3000, 0, 0, 0, 0, 400, 600, 0.0200),
+                Segment("A2", "L2", 3000, 6000, 0, 0, 0, 0, 400, 600, 0.0200),
                 Segment("B1", "L1", 0, 3000, 10000, 0, 10000, 0, 400, 600, 0.0204),
                 Segment("B2", "L2", 3000, 6000, 10000, 0, 10000, 0, 400, 600, 0.0204)
             };
@@ -132,8 +134,8 @@ namespace ColumnGrouping.Tests
             var engine = new ColumnGroupingEngine(Settings());
             var segments = new List<ColumnSegment>
             {
-                Segment("A1", "L1", 0, 3000, 0, 0, 0, 0, 400, 600, 0.02),
-                Segment("B1", "L1", 0, 3000, 10000, 0, 10000, 0, 400, 600, 0.021)
+                Segment("A1", "L1", 0, 3000, 0, 0, 0, 0, 400, 600, 0.0200),
+                Segment("B1", "L1", 0, 3000, 10000, 0, 10000, 0, 400, 600, 0.0210)
             };
 
             var report = engine.Run(segments);
