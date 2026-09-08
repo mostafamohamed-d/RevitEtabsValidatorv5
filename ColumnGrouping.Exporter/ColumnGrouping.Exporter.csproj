@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ColumnGrouping.Exporter</RootNamespace>
+    <AssemblyName>ColumnGrouping.Exporter</AssemblyName>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <PlatformTarget>x64</PlatformTarget>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <ETABSInstallPath Condition="'$(ETABSInstallPath)'==''">$(ProgramFiles)\Computers and Structures\ETABS 21</ETABSInstallPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ColumnGrouping.Core\ColumnGrouping.Core.csproj" />
+    <Reference Include="ETABSv1">
+      <HintPath>$(ETABSInstallPath)\ETABSv1.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
