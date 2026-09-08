@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.0.13
+- Moved the floor-plan coordinate mapping out of `MainWindow.xaml.cs` into
+  `Core/Geometry/PlanProjection.cs` and added 14 regression tests for it
+  (test suite is now 50 checks, all passing). The plan view has now been
+  "fixed" three times without the members actually appearing, so the
+  arithmetic that decides whether anything is visible at all is no longer
+  trapped inside a WPF class that cannot be tested without Windows, Revit
+  and ETABS. `Core/` compiles on any plain .NET SDK, so these run in CI and
+  on Linux.
+- The tests pin down the actual failure rather than merely restating the
+  fix: for a real 126 x 96 m floor in a 1200 px viewport, the old raw-
+  millimetre canvas produced a fit scale of 0.0090 - a column glyph of
+  **0.107 px** and a beam stroke of **0.027 px**. The normalized canvas
+  produces 1.085, i.e. **13.0 px** and **3.25 px** (a 121x difference).
+  The thresholds asserted (column >= 3 px, beam >= 1 px) fail against the
+  old code and pass against the new, so this bug cannot silently return.
+  Also covered: corner mapping including the Y flip, aspect-ratio
+  preservation, scale invariance between a 6 m and a 400 m model,
+  NaN/Infinity rejection, single-member floors (no divide-by-zero), and the
+  Revit/ETABS centroid-offset diagnostic.
+
 ## 1.0.12
 - Fixed (CRITICAL - this is why the plan looked empty): `DrawPlan` built the
   plan canvas in raw model millimetres (`PlanCanvas.Width = worldW + 40`,

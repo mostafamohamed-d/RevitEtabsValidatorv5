@@ -450,6 +450,140 @@ var comparer = new ModelComparer();
     Console.WriteLine($"PERF cross-floor spatial-index bleed cost (Bug #5 from the QA report): all-at-once was {speedupNote} the cost of per-floor scoping");
 }
 
+// ---------------------------------------------------------------------------
+// Floor-plan projection (PlanProjection).
+//
+// These exist because of a real, shipped bug: the plan canvas was built in raw
+// model millimetres while every member glyph was sized as if the canvas were
+// screen pixels (column radius 6, beam stroke 3, label font 10 = 6 mm, 3 mm and
+// 10 mm IN THE BUILDING). Fitting a real ~120 m floor into a ~1200 px viewport
+// gives a fit scale near 0.01, so columns rendered at 0.06 px and beams at
+// 0.03 px: drawn correctly, invisible at every zoom. Three separate rounds of
+// "fixes" to that view could not show anything while this held, so the
+// arithmetic that decides visibility is now pinned down here.
+// ---------------------------------------------------------------------------
+{
+    // Glyph sizes the plan view draws with, in canvas units (see MainWindow's
+    // AddColumnVisual/AddBeamVisual/AddPlanLabel).
+    const double columnGlyphRadius = 6.0;
+    const double beamGlyphStroke = 3.0;
+    // Representative plan viewport in device-independent pixels.
+    const double viewportPx = 1200.0;
+
+    // Reproduces FitPlan_Click: fit the canvas into the viewport, 6% margin.
+    static double FitScale(PlanProjection projection, double viewport)
+        => Math.Min(viewport / projection.CanvasWidth, viewport / projection.CanvasHeight) * 0.94;
+
+    // A real basement floor: 126 m x 96 m, columns on a 6 m grid.
+    const double bigFloorMaxX = 126000;
+    const double bigFloorMaxY = 96000;
+    var bigFloor = new List<Point3D>();
+    for (var x = 0.0; x <= bigFloorMaxX; x += 6000)
+    for (var y = 0.0; y <= bigFloorMaxY; y += 6000)
+        bigFloor.Add(new Point3D(x, y, 0));
+
+    var bigProjection = PlanProjection.Create(bigFloor);
+    Check("Plan projection: a real 126x96 m floor produces a projection", bigProjection != null);
+
+    if (bigProjection != null)
+    {
+        var fit = FitScale(bigProjection, viewportPx);
+        var columnPx = columnGlyphRadius * 2.0 * fit;
+        var beamPx = beamGlyphStroke * fit;
+        Console.WriteLine($"PLAN 126x96 m floor: fit scale {fit:F3}, column glyph {columnPx:F2} px, beam stroke {beamPx:F2} px");
+
+        // The regression itself: with the old raw-millimetre canvas this fit scale
+        // was ~0.01 and these came out at 0.12 px / 0.03 px.
+        Check("Plan projection: column glyph on a real-size floor renders at a visible size (>= 3 px across)",
+            columnPx >= 3.0, $"{columnPx:F3} px");
+        Check("Plan projection: beam stroke on a real-size floor renders at a visible width (>= 1 px)",
+            beamPx >= 1.0, $"{beamPx:F3} px");
+
+        // Corner mapping, including the Y flip (model Y up, canvas Y down).
+        var topLeft = bigProjection.Map(new Point3D(0, bigFloorMaxY, 0));
+        var bottomRight = bigProjection.Map(new Point3D(bigFloorMaxX, 0, 0));
+        Check("Plan projection: model top-left maps to the canvas margin corner",
+            Math.Abs(topLeft.X - PlanProjection.Margin) < 1e-6 && Math.Abs(topLeft.Y - PlanProjection.Margin) < 1e-6,
+            $"({topLeft.X:F3}, {topLeft.Y:F3})");
+        Check("Plan projection: model bottom-right maps to the far canvas corner (Y is flipped, not mirrored)",
+            Math.Abs(bottomRight.X - (bigProjection.CanvasWidth - PlanProjection.Margin)) < 1e-6 &&
+            Math.Abs(bottomRight.Y - (bigProjection.CanvasHeight - PlanProjection.Margin)) < 1e-6,
+            $"({bottomRight.X:F3}, {bottomRight.Y:F3})");
+
+        // Aspect ratio must survive normalization or the plan would be distorted.
+        var worldAspect = bigProjection.WorldWidthMm / bigProjection.WorldHeightMm;
+        var canvasAspect = (bigProjection.CanvasWidth - 2 * PlanProjection.Margin) /
+                           (bigProjection.CanvasHeight - 2 * PlanProjection.Margin);
+        Check("Plan projection: normalization preserves the plan's aspect ratio (no stretching)",
+            Math.Abs(worldAspect - canvasAspect) < 1e-9, $"world {worldAspect:F6} vs canvas {canvasAspect:F6}");
+    }
+
+    // The small test model from the earlier session (4 columns over ~6 m) has to
+    // stay visible too - the same bug made it a faint smudge rather than nothing.
+    var smallProjection = PlanProjection.Create(new[]
+    {
+        new Point3D(0, 0, 0), new Point3D(6000, 0, 0),
+        new Point3D(0, 6000, 0), new Point3D(6000, 6000, 0)
+    });
+    if (smallProjection != null)
+    {
+        var smallColumnPx = columnGlyphRadius * 2.0 * FitScale(smallProjection, viewportPx);
+        Check("Plan projection: column glyph on a small 6x6 m test model is also visible",
+            smallColumnPx >= 3.0, $"{smallColumnPx:F3} px");
+    }
+
+    // Scale invariance is the actual point: a 6 m model and a 400 m model must
+    // both land on usable glyph sizes, because the canvas is normalized.
+    var hugeProjection = PlanProjection.Create(new[]
+    {
+        new Point3D(0, 0, 0), new Point3D(400000, 0, 0), new Point3D(0, 400000, 0)
+    });
+    if (smallProjection != null && hugeProjection != null)
+    {
+        Check("Plan projection: fit scale is independent of building size (6 m vs 400 m models agree)",
+            Math.Abs(FitScale(smallProjection, viewportPx) - FitScale(hugeProjection, viewportPx)) < 1e-9,
+            $"{FitScale(smallProjection, viewportPx):F6} vs {FitScale(hugeProjection, viewportPx):F6}");
+    }
+
+    // One NaN coordinate used to poison Min/Max and leave the canvas un-renderable.
+    var withGarbage = PlanProjection.Create(new[]
+    {
+        new Point3D(0, 0, 0), new Point3D(10000, 10000, 0),
+        new Point3D(double.NaN, 5000, 0), new Point3D(5000, double.PositiveInfinity, 0)
+    });
+    Check("Plan projection: NaN/Infinity coordinates are excluded instead of poisoning the canvas size",
+        withGarbage != null && !double.IsNaN(withGarbage.CanvasWidth) && !double.IsNaN(withGarbage.CanvasHeight) &&
+        Math.Abs(withGarbage.WorldWidthMm - 10000) < 1e-6,
+        withGarbage == null ? "null projection" : $"{withGarbage.CanvasWidth:F1} x {withGarbage.CanvasHeight:F1}");
+
+    Check("Plan projection: a floor with no finite geometry yields no projection rather than a broken canvas",
+        PlanProjection.Create(new[] { new Point3D(double.NaN, double.NaN, 0) }) == null);
+
+    // Degenerate extent (a single column on a floor) must not divide by zero.
+    var single = PlanProjection.Create(new[] { new Point3D(15000, 22000, 0) });
+    Check("Plan projection: a single-member floor produces a finite canvas (no divide-by-zero)",
+        single != null && single.CanvasWidth > 0 && single.CanvasHeight > 0 &&
+        !double.IsInfinity(single.CanvasWidth) && !double.IsNaN(single.CanvasWidth));
+
+    // Centroid-offset diagnostic: the "everything Missing, nothing Matched" signal.
+    var offset = PlanProjection.CentroidOffset(
+        new[] { new Point3D(0, 0, 0), new Point3D(10000, 0, 0) },
+        new[] { new Point3D(45000, 3000, 0), new Point3D(55000, 3000, 0) });
+    Check("Plan projection: centroid offset reports the Revit/ETABS plan shift (45 m X, 3 m Y)",
+        offset != null && Math.Abs(offset.Value.DeltaXMm + 45000) < 1e-6 &&
+        Math.Abs(offset.Value.DeltaYMm + 3000) < 1e-6,
+        offset == null ? "null" : $"ΔX {offset.Value.DeltaXMm:F1}, ΔY {offset.Value.DeltaYMm:F1}");
+
+    var aligned = PlanProjection.CentroidOffset(
+        new[] { new Point3D(0, 0, 0), new Point3D(10000, 0, 0) },
+        new[] { new Point3D(0, 0, 0), new Point3D(10000, 0, 0) });
+    Check("Plan projection: co-located models report ~zero centroid offset (no false coordinate warning)",
+        aligned != null && aligned.Value.OffsetMm < 1e-6, aligned == null ? "null" : $"{aligned.Value.OffsetMm:F3} mm");
+
+    Check("Plan projection: centroid offset is undefined when one side has no members",
+        PlanProjection.CentroidOffset(new[] { new Point3D(0, 0, 0) }, new Point3D[0]) == null);
+}
+
 Console.WriteLine();
 Console.WriteLine($"TOTAL: {passed} passed, {failures} failed");
 return failures == 0 ? 0 : 1;
