@@ -51,6 +51,10 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, string> _etabsToRevitLevel = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> _selectedRevitLevels = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> _selectedEtabsStories = new(StringComparer.OrdinalIgnoreCase);
+    private List<StoryMatch> _storyMatches = new();
+    private double? _etabsUnitScale;
+    private bool _storyElevationsWereDerived;
+    private string _etabsReadDiagnostics = "";
 
     private readonly TransformGroup _planTransform = new();
     private readonly ScaleTransform _planScale = new(1, 1);
@@ -270,21 +274,39 @@ public partial class MainWindow : Window
 
             SetStatus("Reading ETABS model (this can take a while for a large model)...");
 
-            var (columns, beams, storyElevations, excludedCount, unitsOk) = await Task.Run(() =>
+            var (columns, beams, storyElevations, excludedCount, unitsOk, unitsMessage, storyDiagnostic) = await Task.Run(() =>
             {
-                var unitsOkResult = _etabs.SetUnitsKnMmC();
+                var unitsOkResult = _etabs.SetUnitsKnMmC(out var unitsMsg);
                 var reader = new EtabsModelReader(sapModel);
                 var readColumns = reader.ReadColumns();
                 var readBeams = reader.ReadBeams();
-                return (readColumns, readBeams, reader.StoryElevationsMm, reader.ExcludedZeroNameCount, unitsOkResult);
+                return (readColumns, readBeams, reader.StoryElevationsMm, reader.ExcludedZeroNameCount,
+                        unitsOkResult, unitsMsg, reader.StoryReadDiagnostic);
             });
-
-            if (!unitsOk)
-                SetStatus("Warning: ETABS units were not confirmed as kN-mm-C.");
 
             _etabsStoryElevationsMm.Clear();
             foreach (var pair in storyElevations)
                 _etabsStoryElevationsMm[pair.Key] = pair.Value;
+
+            // The ETABS Story API failing is not fatal: every frame already carries
+            // its story name (read via GetLabelFromName - that is why members import
+            // even when the story table does not), so the story table can be rebuilt
+            // from the geometry. Without this, an empty story table maps every Revit
+            // level to nothing and the whole model reports as Missing.
+            _storyElevationsWereDerived = false;
+            if (_etabsStoryElevationsMm.Count == 0)
+            {
+                var derived = StoryMapper.DeriveStoryElevations(columns.Concat<ElementBase>(beams));
+                foreach (var pair in derived)
+                    _etabsStoryElevationsMm[pair.Key] = pair.Value;
+                _storyElevationsWereDerived = derived.Count > 0;
+            }
+
+            _etabsReadDiagnostics = storyDiagnostic +
+                (_storyElevationsWereDerived
+                    ? $" Rebuilt {_etabsStoryElevationsMm.Count} story elevation(s) from the ETABS members instead."
+                    : "") +
+                (unitsOk ? "" : $" WARNING: ETABS units were not confirmed as kN-mm-C ({unitsMessage}) - ETABS lengths may not be millimetres.");
 
             _etabsColumns = columns;
             _etabsBeams = beams;
@@ -292,7 +314,8 @@ public partial class MainWindow : Window
             EtabsColCount.Text = _etabsColumns.Count.ToString();
             EtabsBeamCount.Text = _etabsBeams.Count.ToString();
 
-            SetStatus($"ETABS read complete: {_etabsColumns.Count} columns, {_etabsBeams.Count} beams. Excluded zero-prefixed frames: {excludedCount}.");
+            SetStatus($"ETABS read complete: {_etabsColumns.Count} columns, {_etabsBeams.Count} beams, " +
+                      $"{_etabsStoryElevationsMm.Count} stories. Excluded zero-prefixed frames: {excludedCount}. {_etabsReadDiagnostics}");
         }
         catch (Exception ex)
         {
@@ -423,10 +446,11 @@ public partial class MainWindow : Window
                 PlanFloorList.SelectedIndex = 0;
             UpdateFloorResults();
 
-            if (_selectedEtabsStories.Count == 0 && _etabsStoryElevationsMm.Count > 0)
-                SetStatus($"Validation complete: {_all.Count} comparison result(s), but none of the {_selectedRevitLevels.Count} selected floor(s) mapped to an ETABS story - every Revit element in scope will show as missing. Check the floor mapping or pick different floors.");
+            if (_selectedEtabsStories.Count == 0)
+                SetStatus($"Validation complete: {_all.Count} comparison result(s), but none of the {_selectedRevitLevels.Count} selected floor(s) mapped to an ETABS story - " +
+                          $"every element in scope will show as missing, which is a mapping problem rather than a coordination problem. {DescribeFloorMapping()} {_etabsReadDiagnostics}");
             else
-                SetStatus($"Validation complete: {_all.Count} comparison results across {_selectedRevitLevels.Count} selected floor(s).");
+                SetStatus($"Validation complete: {_all.Count} comparison results across {_selectedRevitLevels.Count} selected floor(s). {DescribeFloorMapping()}");
         }
         catch (Exception ex)
         {
@@ -469,45 +493,63 @@ public partial class MainWindow : Window
         BuildFloorMapping();
     }
 
+    // Delegates to Core's StoryMapper: names first, elevation only as a bounded
+    // fallback, with a metre/millimetre unit mismatch detected rather than silently
+    // mismatched. See StoryMapper's own comment for why the previous
+    // nearest-elevation-with-no-limit rule failed on real models.
     private void BuildFloorMapping()
     {
         _revitToEtabsStory.Clear();
         _etabsToRevitLevel.Clear();
+        _storyMatches = new List<StoryMatch>();
 
-        foreach (var level in _revitLevels)
+        if (_revitLevels.Count == 0)
+            return;
+
+        var levels = _revitLevels.Select(x => (RevitLevel: x.Name, RevitElevationMm: x.ElevationMm));
+        _etabsUnitScale = StoryMapper.DetectEtabsUnitScale(levels, _etabsStoryElevationsMm);
+        _storyMatches = StoryMapper.Map(levels, _etabsStoryElevationsMm, etabsUnitScale: _etabsUnitScale);
+
+        foreach (var match in _storyMatches.Where(x => x.IsMatched))
         {
-            if (_etabsStoryElevationsMm.Count == 0)
-                continue;
-
-            var nearest = _etabsStoryElevationsMm
-                .OrderBy(x => Math.Abs(x.Value - level.ElevationMm))
-                .FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(nearest.Key))
-                continue;
-
-            _revitToEtabsStory[level.Name] = nearest.Key;
-
-            if (!_etabsToRevitLevel.TryGetValue(nearest.Key, out var currentLevelName))
-            {
-                _etabsToRevitLevel[nearest.Key] = level.Name;
-                continue;
-            }
-
-            var currentLevel = _revitLevels.FirstOrDefault(x =>
-                string.Equals(x.Name, currentLevelName, StringComparison.OrdinalIgnoreCase));
-
-            var etabsElevation = _etabsStoryElevationsMm.TryGetValue(nearest.Key, out var z)
-                ? z
-                : nearest.Value;
-
-            var currentDifference = currentLevel == default
-                ? double.PositiveInfinity
-                : Math.Abs(etabsElevation - currentLevel.ElevationMm);
-            var newDifference = Math.Abs(etabsElevation - level.ElevationMm);
-
-            if (newDifference < currentDifference)
-                _etabsToRevitLevel[nearest.Key] = level.Name;
+            _revitToEtabsStory[match.RevitLevel] = match.EtabsStory;
+            _etabsToRevitLevel[match.EtabsStory] = match.RevitLevel;
         }
+    }
+
+    // Summarises the mapping outcome for the status bar, so an unmapped model is
+    // explained rather than just showing "no mapped story" against every level.
+    private string DescribeFloorMapping()
+    {
+        if (_storyMatches.Count == 0)
+            return "";
+
+        var matched = _storyMatches.Count(x => x.IsMatched);
+        var byName = _storyMatches.Count(x => x.Kind == StoryMatchKind.Name);
+        var byElevation = _storyMatches.Count(x => x.Kind == StoryMatchKind.Elevation);
+
+        var text = $"Floor mapping: {matched}/{_storyMatches.Count} Revit level(s) mapped " +
+                   $"({byName} by name, {byElevation} by elevation).";
+
+        if (_etabsStoryElevationsMm.Count == 0)
+            text += " No ETABS story elevations are available - check the ETABS connection/story table.";
+        else if (_storyElevationsWereDerived)
+            text += " ETABS story elevations were rebuilt from the members because the ETABS story table could not be read.";
+
+        if (_etabsUnitScale == 1000.0)
+            text += " ETABS elevations look like metres, not millimetres - they were scaled by 1000 for mapping; " +
+                    "set ETABS units to kN-mm-C so member coordinates match too.";
+
+        var drift = _storyMatches
+            .Where(x => x.IsMatched && Math.Abs(x.ElevationDeltaMm) > 1.0)
+            .OrderByDescending(x => Math.Abs(x.ElevationDeltaMm))
+            .Take(3)
+            .Select(x => $"{x.RevitLevel} vs {x.EtabsStory} {x.ElevationDeltaMm:+0;-0;0} mm")
+            .ToList();
+        if (drift.Count > 0)
+            text += " Level elevation differences: " + string.Join("; ", drift) + ".";
+
+        return text;
     }
 
     private bool ShowFloorSelection()
@@ -530,7 +572,9 @@ public partial class MainWindow : Window
                 RevitLevel = x.Name,
                 RevitElevationMm = x.ElevationMm,
                 EtabsStory = _revitToEtabsStory.TryGetValue(x.Name, out var story) ? story : "",
-                EtabsElevationMm = _revitToEtabsStory.TryGetValue(x.Name, out var story2) && _etabsStoryElevationsMm.TryGetValue(story2, out var el) ? el : 0,
+                EtabsElevationMm = _storyMatches.FirstOrDefault(m => string.Equals(m.RevitLevel, x.Name, StringComparison.OrdinalIgnoreCase))?.EtabsElevationMm ?? 0,
+                MatchedByName = _storyMatches.Any(m => string.Equals(m.RevitLevel, x.Name, StringComparison.OrdinalIgnoreCase) && m.Kind == StoryMatchKind.Name),
+                ElevationDeltaMm = _storyMatches.FirstOrDefault(m => string.Equals(m.RevitLevel, x.Name, StringComparison.OrdinalIgnoreCase))?.ElevationDeltaMm ?? 0,
                 IsSelected = true
             })
             .ToList();

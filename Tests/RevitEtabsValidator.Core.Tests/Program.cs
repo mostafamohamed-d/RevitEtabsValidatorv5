@@ -584,6 +584,132 @@ var comparer = new ModelComparer();
         PlanProjection.CentroidOffset(new[] { new Point3D(0, 0, 0) }, new Point3D[0]) == null);
 }
 
+// ---------------------------------------------------------------------------
+// Revit level <-> ETABS story mapping (StoryMapper).
+//
+// Built from a real model where all 7 Revit levels reported "ETABS: no mapped
+// story" even though the elevations agreed exactly. The old rule was "nearest
+// elevation wins, no distance limit", which depends entirely on the ETABS story
+// elevation list - and when that list comes back empty (the reader swallowed the
+// error code), every level maps to nothing, the ETABS side is filtered to
+// nothing, and a coordinated model reads as 100% Missing.
+// ---------------------------------------------------------------------------
+{
+    // The actual names from that model, Revit side and ETABS side.
+    var revitLevels = new List<(string RevitLevel, double RevitElevationMm)>
+    {
+        ("BASEMENT 2 LEVEL (SSL)", -9000),
+        ("BASEMENT 1 LEVEL (SSL)", -5000),
+        ("GROUND FLOOR (SSL)", -100),
+        ("1ST FLOOR (PODIUM) (SSL)", 4850),
+        ("2ND FLOOR (PODIUM) (SSL)", 8350),
+        ("3RD FLOOR (PDOIUM DECK) (SSL)", 13650),
+        ("4TH FLOOR (SSL)", 17175)
+    };
+
+    // ETABS story elevations as the Story Data dialog shows them: METRES.
+    var etabsStoriesMetres = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["BASEMETN 2"] = -9,
+        ["BASEMENT 1"] = -5,
+        ["GROUND FLOOR"] = -0.1,
+        ["1ST FLOOR (PODIUM)"] = 4.35,
+        ["2ND FLOOR (PODIUM)"] = 8.35,
+        ["3RD FLOOR (PODIUM)"] = 13.65,
+        ["4TH FLOOR"] = 17.175,
+        ["5TH FLOOR"] = 20.675,
+        ["6TH FLOOR"] = 24.175
+    };
+
+    Check("Story mapping: '(SSL)' and 'LEVEL' decoration is stripped for comparison",
+        StoryMapper.NormalizeName("BASEMENT 2 LEVEL (SSL)") == StoryMapper.NormalizeName("BASEMENT 2"),
+        $"'{StoryMapper.NormalizeName("BASEMENT 2 LEVEL (SSL)")}' vs '{StoryMapper.NormalizeName("BASEMENT 2")}'");
+
+    // The Revit name has a typo ("PDOIUM") and says DECK; dropping parenthesised
+    // qualifiers makes the pair match anyway.
+    Check("Story mapping: differing parenthesised qualifiers still match ('(PDOIUM DECK)' vs '(PODIUM)')",
+        StoryMapper.NormalizeName("3RD FLOOR (PDOIUM DECK) (SSL)") == StoryMapper.NormalizeName("3RD FLOOR (PODIUM)"));
+
+    Check("Story mapping: genuinely different floors do NOT normalize to the same name",
+        StoryMapper.NormalizeName("4TH FLOOR (SSL)") != StoryMapper.NormalizeName("5TH FLOOR"));
+
+    // ETABS in metres against Revit in millimetres.
+    var scale = StoryMapper.DetectEtabsUnitScale(revitLevels, etabsStoriesMetres);
+    Check("Story mapping: metre/millimetre unit mismatch is detected (scale 1000)",
+        scale == 1000.0, scale?.ToString("F1") ?? "null");
+
+    var mapped = StoryMapper.Map(revitLevels, etabsStoriesMetres);
+    var matchedCount = mapped.Count(x => x.IsMatched);
+    Console.WriteLine($"STORY MAP: {matchedCount}/{mapped.Count} levels matched; " +
+        string.Join(", ", mapped.Select(x => $"{x.RevitLevel}->{(x.IsMatched ? x.EtabsStory : "(none)")}[{x.Kind}]")));
+
+    // The regression: every one of these used to come back unmapped.
+    Check("Story mapping: all 7 real Revit levels map to an ETABS story",
+        matchedCount == 7, $"{matchedCount} of 7");
+
+    Check("Story mapping: 4TH FLOOR maps to 4TH FLOOR (not 5TH)",
+        mapped.First(x => x.RevitLevel == "4TH FLOOR (SSL)").EtabsStory == "4TH FLOOR");
+    Check("Story mapping: GROUND FLOOR maps to GROUND FLOOR",
+        mapped.First(x => x.RevitLevel == "GROUND FLOOR (SSL)").EtabsStory == "GROUND FLOOR");
+    Check("Story mapping: 3RD FLOOR maps across the qualifier/typo difference",
+        mapped.First(x => x.RevitLevel.StartsWith("3RD FLOOR")).EtabsStory == "3RD FLOOR (PODIUM)");
+
+    // "BASEMETN 2" is misspelled in ETABS, so it cannot match by name - it has to
+    // fall through to elevation, which only works once the unit scale is applied.
+    var basement2 = mapped.First(x => x.RevitLevel.StartsWith("BASEMENT 2"));
+    Check("Story mapping: a misspelled ETABS story ('BASEMETN 2') still matches by elevation",
+        basement2.IsMatched && basement2.EtabsStory == "BASEMETN 2" && basement2.Kind == StoryMatchKind.Elevation,
+        $"{basement2.EtabsStory} [{basement2.Kind}]");
+
+    Check("Story mapping: no ETABS story is claimed by two different Revit levels",
+        mapped.Where(x => x.IsMatched).Select(x => x.EtabsStory).Distinct(StringComparer.OrdinalIgnoreCase).Count()
+            == matchedCount);
+
+    // 1ST FLOOR: Revit 4850 mm vs ETABS 4.35 m = 4350 mm. Matching by name is right
+    // (it is that floor), and the 500 mm difference is a real finding to report.
+    var first = mapped.First(x => x.RevitLevel.StartsWith("1ST FLOOR"));
+    Check("Story mapping: a name-matched floor still reports its elevation difference (4850 vs 4350 = 500 mm)",
+        first.Kind == StoryMatchKind.Name && Math.Abs(first.ElevationDeltaMm - 500.0) < 1e-6,
+        $"{first.Kind}, delta {first.ElevationDeltaMm:F1} mm");
+
+    // Same names, but ETABS already in millimetres - must not be rescaled.
+    var etabsStoriesMm = etabsStoriesMetres.ToDictionary(x => x.Key, x => x.Value * 1000.0, StringComparer.OrdinalIgnoreCase);
+    Check("Story mapping: matching millimetre elevations are left alone (scale 1)",
+        StoryMapper.DetectEtabsUnitScale(revitLevels, etabsStoriesMm) == 1.0);
+    Check("Story mapping: all 7 levels also map when ETABS is already in millimetres",
+        StoryMapper.Map(revitLevels, etabsStoriesMm).Count(x => x.IsMatched) == 7);
+
+    // Unbounded "nearest wins" would pair a lone basement with a roof story.
+    var farOnly = StoryMapper.Map(
+        new[] { ("SOME PLINTH", -9000.0) },
+        new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { ["ROOF"] = 34675.0 });
+    Check("Story mapping: an elevation match beyond tolerance is refused, not forced",
+        !farOnly[0].IsMatched, farOnly[0].EtabsStory);
+
+    // The fallback for when the ETABS Story API yields nothing: rebuild the story
+    // table from the members, which already carry their story name.
+    var etabsMembers = new List<ElementBase>
+    {
+        new BeamElement { Id = "b1", Name = "B1", LevelName = "GROUND FLOOR", StartPoint = new Point3D(0, 0, -100), EndPoint = new Point3D(5000, 0, -100), Width = 300, Depth = 500 },
+        new BeamElement { Id = "b2", Name = "B2", LevelName = "GROUND FLOOR", StartPoint = new Point3D(0, 5000, -100), EndPoint = new Point3D(5000, 5000, -100), Width = 300, Depth = 500 },
+        new BeamElement { Id = "b3", Name = "B3", LevelName = "4TH FLOOR", StartPoint = new Point3D(0, 0, 17175), EndPoint = new Point3D(5000, 0, 17175), Width = 300, Depth = 500 },
+        // A column assigned to 4TH FLOOR spans up TO that story, so its top is the elevation.
+        new ColumnElement { Id = "c1", Name = "C1", LevelName = "4TH FLOOR", StartPoint = new Point3D(0, 0, 13650), EndPoint = new Point3D(0, 0, 17175), Width = 400, Depth = 400 }
+    };
+    var derived = StoryMapper.DeriveStoryElevations(etabsMembers);
+    Check("Story mapping: story elevations can be rebuilt from members when the Story API returns nothing",
+        derived.Count == 2 && Math.Abs(derived["GROUND FLOOR"] + 100) < 1e-6 && Math.Abs(derived["4TH FLOOR"] - 17175) < 1e-6,
+        string.Join(", ", derived.Select(x => $"{x.Key}={x.Value:F0}")));
+
+    Check("Story mapping: levels map correctly against the rebuilt story table",
+        StoryMapper.Map(
+            new[] { ("GROUND FLOOR (SSL)", -100.0), ("4TH FLOOR (SSL)", 17175.0) },
+            derived).Count(x => x.IsMatched) == 2);
+
+    Check("Story mapping: an empty ETABS story table yields explicit unmatched levels, not a crash",
+        StoryMapper.Map(revitLevels, new Dictionary<string, double>()).All(x => !x.IsMatched));
+}
+
 Console.WriteLine();
 Console.WriteLine($"TOTAL: {passed} passed, {failures} failed");
 return failures == 0 ? 0 : 1;

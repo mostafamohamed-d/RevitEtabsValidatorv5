@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.0.15
+- Fixed (CRITICAL): every Revit level reported "ETABS: no mapped story" on a
+  real model whose elevations matched exactly. `BuildFloorMapping` mapped each
+  level to the NEAREST ETABS story with no distance limit, so an all-unmapped
+  result could only mean the ETABS story elevation table was empty - and
+  `ReadStoryElevations` threw away its API return code and any exception
+  (`catch { }`), so nothing said so. Because the validator then filters the
+  ETABS side down to the mapped stories, an empty story table turns a
+  coordinated model into "everything Missing on both sides", which is
+  indistinguishable in the UI from a genuinely uncoordinated model. This is
+  the most likely origin of the earlier 997-missing / 0-matched run.
+- Added `Core/Comparison/StoryMapper.cs` (21 new tests, suite now 67) which
+  replaces nearest-elevation-wins with:
+  - **Name matching first.** Normalization strips the decoration that differs
+    between the two sides - "BASEMENT 2 LEVEL (SSL)" ↔ "BASEMENT 2",
+    "3RD FLOOR (PDOIUM DECK) (SSL)" ↔ "3RD FLOOR (PODIUM)". Dropping
+    parenthesised qualifiers also makes it immune to them being spelled
+    differently (or misspelled) on one side. Names are what an engineer
+    relies on, and they survive both a missing story table and a unit
+    mismatch.
+  - **Bounded elevation fallback** (default ±1500 mm) for levels with no name
+    match, instead of forcing a pairing at any distance.
+  - **One story per level**: an ETABS story can no longer be silently claimed
+    by two Revit levels.
+  - **Unit-mismatch detection.** If ETABS reports elevations in metres while
+    Revit is in millimetres (~1000x), it is detected from the name-matched
+    pairs, applied for mapping, and reported - rather than making every
+    "nearest elevation" comparison meaningless.
+- Added: when the ETABS Story API yields nothing, the story table is rebuilt
+  from the ETABS members themselves. Every frame already carries its story
+  name (via `GetLabelFromName` - which is why members import even when the
+  story table does not), so a beam's midpoint Z and a column's top Z give the
+  story elevation back (median, so stray members can't skew it).
+- Added diagnostics that reach the user instead of being swallowed: the story
+  read now reports its count, API return code or exception; the ETABS read
+  status line reports the story count; a units failure is reported as
+  "ETABS lengths may not be millimetres" rather than a warning immediately
+  overwritten by the next status message; and the scope dialog shows how each
+  level was paired ("by name" / "by elevation") plus any level-elevation
+  difference (e.g. Revit 1ST FLOOR 4850 mm vs ETABS 4350 mm = ΔEL +500 mm),
+  which is a genuine coordination finding rather than something to hide.
+
 ## 1.0.14
 - Fixed (HIGH - "can't select anything in the plan"): the middle-drag pan
   took the mouse capture on `PlanViewHost` (the Border) but handled

@@ -31,6 +31,13 @@ public sealed class EtabsModelReader
     public IReadOnlyDictionary<string, double> StoryElevationsMm { get; private set; }
         = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// What happened when the ETABS story table was read - success count, API return
+    /// code, or exception. Surfaced in the UI because an empty story table silently
+    /// turns a coordinated model into "everything Missing".
+    /// </summary>
+    public string StoryReadDiagnostic { get; private set; } = "ETABS story table was not read.";
+
     public List<ColumnElement> ReadColumns() => ReadFrames<ColumnElement>(eFrameDesignOrientation.Column);
 
     public List<BeamElement> ReadBeams() => ReadFrames<BeamElement>(eFrameDesignOrientation.Beam);
@@ -203,6 +210,11 @@ public sealed class EtabsModelReader
         return (0.0, 0.0);
     }
 
+    // Why this reports instead of swallowing: when the story list comes back empty
+    // every Revit level maps to no ETABS story, the validator then filters the ETABS
+    // side down to nothing, and a perfectly coordinated model is reported as 100%
+    // Missing on both sides. That is indistinguishable, from the UI, from a genuinely
+    // uncoordinated model - so the reason has to reach the user.
     private Dictionary<string, double> ReadStoryElevations()
     {
         var result = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
@@ -212,9 +224,18 @@ public sealed class EtabsModelReader
             int count = 0;
             string[] names = Array.Empty<string>();
             int rc = _sap.Story.GetNameList(ref count, ref names);
-            if (rc != 0 || names == null)
+            if (rc != 0)
+            {
+                StoryReadDiagnostic = $"ETABS Story.GetNameList returned {rc} (expected 0); no stories could be listed.";
                 return result;
+            }
+            if (names == null || names.Length == 0)
+            {
+                StoryReadDiagnostic = "ETABS Story.GetNameList reported success but returned no story names.";
+                return result;
+            }
 
+            var failed = 0;
             foreach (var name in names)
             {
                 if (string.IsNullOrWhiteSpace(name))
@@ -223,9 +244,18 @@ public sealed class EtabsModelReader
                 double elevation = 0.0;
                 if (_sap.Story.GetElevation(name, ref elevation) == 0)
                     result[name] = elevation;
+                else
+                    failed++;
             }
+
+            StoryReadDiagnostic = failed > 0
+                ? $"Read {result.Count} ETABS story elevation(s); {failed} story name(s) returned no elevation."
+                : $"Read {result.Count} ETABS story elevation(s).";
         }
-        catch { }
+        catch (Exception ex)
+        {
+            StoryReadDiagnostic = $"ETABS story read failed: {ex.GetType().Name}: {ex.Message}";
+        }
 
         return result;
     }
