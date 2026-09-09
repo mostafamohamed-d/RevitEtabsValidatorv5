@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using Autodesk.Revit.UI;
 using RevitEtabsValidator.Core.Comparison;
 using RevitEtabsValidator.Core.Geometry;
@@ -10,12 +13,13 @@ using System.Collections.ObjectModel;
 using System.IO;
 using IOPath = System.IO.Path;
 using System.Text;
-using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Effects;
 using System.Windows.Shapes;
+using System.Windows.Threading;
 using WpfTextBox = System.Windows.Controls.TextBox;
 using ValidationResult = RevitEtabsValidator.Core.Validation.ValidationResult;
 
@@ -36,6 +40,7 @@ public partial class MainWindow : Window
     private ValidationReport _columnReport = new();
     private ValidationReport _beamReport = new();
     private List<ValidationResult> _all = new();
+    private ValidationTolerance _lastTolerance = new();
     private readonly ObservableCollection<ValidationResult> _floorVisible = new();
     private ValidationResult? _selected;
     private bool _validationPending;
@@ -46,6 +51,10 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, string> _etabsToRevitLevel = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> _selectedRevitLevels = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> _selectedEtabsStories = new(StringComparer.OrdinalIgnoreCase);
+    private List<StoryMatch> _storyMatches = new();
+    private double? _etabsUnitScale;
+    private bool _storyElevationsWereDerived;
+    private string _etabsReadDiagnostics = "";
 
     private readonly TransformGroup _planTransform = new();
     private readonly ScaleTransform _planScale = new(1, 1);
@@ -58,6 +67,23 @@ public partial class MainWindow : Window
     private bool _isPanning;
     private bool _planHasContent;
     private bool _ignorePlanResize;
+    private readonly Dictionary<ValidationResult, List<Shape>> _planShapesByResult = new();
+    private readonly List<Shape> _highlightedShapes = new();
+    private readonly Dictionary<string, ValidationResult> _resultByRevitId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ValidationResult> _resultByEtabsId = new(StringComparer.OrdinalIgnoreCase);
+
+    // Canvas anchor per result, so "go to the next issue" can centre the view on a
+    // member instead of leaving the engineer to hunt for it on a 126 m floor.
+    private readonly Dictionary<ValidationResult, Point> _planAnchorByResult = new();
+    private List<ValidationResult> _planIssues = new();
+    private int _planIssueIndex = -1;
+
+    // The results table starts hidden (see ResultsSplitterRow/ResultsGridRow in
+    // XAML, both Height="0") so the plan is the primary, full-height view; these
+    // are the sizes restored when the user re-opens it via ToggleResultsTable_Click.
+    private bool _resultsTableVisible;
+    private GridLength _savedSplitterRowHeight = new(6);
+    private GridLength _savedResultsRowHeight = new(160);
 
     public MainWindow(UIApplication uiapp)
     {
@@ -112,6 +138,11 @@ public partial class MainWindow : Window
             if (_validationPending)
             {
                 _validationPending = false;
+                // RunValidation_Click set the toolbar busy before raising the Revit
+                // read; ContinueValidation (which would normally clear it) never
+                // runs on this failure path, so it must be cleared here instead or
+                // the toolbar would stay disabled until the window is reopened.
+                SetBusy(false, null);
                 SetStatus("Validation stopped because Revit could not be read: " + ex.Message);
             }
             else
@@ -135,54 +166,147 @@ public partial class MainWindow : Window
         Raise(RevitRequest.ReadModels);
     }
 
-    private void ConnectEtabs_Click(object s, RoutedEventArgs e)
+    // ETABS is a separate out-of-process application (ETABS.exe), so every ETABS
+    // COM call below is already an inter-process RPC regardless of which of our
+    // threads makes it - the cost is COM marshaling overhead, not Revit/WPF API
+    // affinity. At the reported model scale (16,652 beams) that is tens of
+    // thousands of individual round trips, previously made synchronously on the
+    // same thread hosting this window, which is why Revit could appear to hang
+    // during Connect ETABS / Run Validation. Task.Run below moves only the pure
+    // COM/data-fetching work off that thread; every line that touches a WPF
+    // control still runs on the UI thread, either before the first `await` or
+    // automatically after it (WPF's dispatcher-based SynchronizationContext
+    // resumes `await` continuations on the original UI thread with no manual
+    // Dispatcher call needed). ModelComparer and the rest of the UI-updating code
+    // in RunComparisonForSelectedScope are deliberately left untouched - they are
+    // pure, fast, already-Windows-agnostic C# (measured at ~0.4s for this exact
+    // model scale), not COM, and not the bottleneck this addresses.
+    private async void ConnectEtabs_Click(object s, RoutedEventArgs e)
     {
+        SetBusy(true, "Connecting to ETABS...");
         try
         {
-            var ok = _etabs.ConnectRunning();
+            // Enumerate every running ETABS process first so multiple open instances
+            // can be offered as a choice instead of silently attaching to whichever
+            // one plain GetActiveObject would have returned. Falls back to the
+            // original single-instance ConnectRunning() path if enumeration finds
+            // nothing (COM enumeration is best-effort - see ListRunningInstances).
+            var running = await Task.Run(() => _etabs.ListRunningInstances());
+            bool ok;
+
+            if (running.Count > 1)
+            {
+                var picker = new EtabsInstancePickerWindow(running) { Owner = this };
+                if (picker.ShowDialog() != true || picker.Selected == null)
+                {
+                    SetStatus("ETABS connection cancelled: choose one of the running instances to connect.");
+                    return;
+                }
+                ok = await Task.Run(() => _etabs.ConnectTo(picker.Selected));
+            }
+            else if (running.Count == 1)
+            {
+                ok = await Task.Run(() => _etabs.ConnectTo(running[0]));
+            }
+            else
+            {
+                ok = await Task.Run(() => _etabs.ConnectRunning());
+            }
+
             if (!ok && StartEtabs.IsChecked == true)
-                ok = _etabs.StartAndConnect();
+            {
+                SetStatus("Starting ETABS...");
+                ok = await Task.Run(() => _etabs.StartAndConnect());
+            }
 
             if (!ok)
             {
-                ConnectionStateText.Text = "ETABS: Not connected";
+                SetEtabsConnectionState(false, "ETABS: Not connected");
                 SetStatus(_etabs.Message + " Enable 'Start ETABS if not running' when required.");
                 return;
             }
 
-            ConnectionStateText.Text = "ETABS: Connected";
+            SetEtabsConnectionState(true, "ETABS: Connected");
             SetStatus(_etabs.Message);
-            ReadEtabs();
+            await ReadEtabsAsync();
         }
         catch (Exception ex)
         {
-            ConnectionStateText.Text = "ETABS: Connection error";
+            SetEtabsConnectionState(false, "ETABS: Connection error");
             SetStatus("ETABS connection failed: " + ex.Message);
+        }
+        finally
+        {
+            SetBusy(false, null);
         }
     }
 
-    private void ReadEtabs()
+    private void SetEtabsConnectionState(bool connected, string label)
+    {
+        ConnectionStateText.Text = label;
+        ConnectionDot.Fill = connected ? Brushes.SeaGreen : Brushes.IndianRed;
+    }
+
+    // Disables the toolbar (Read Revit / Connect ETABS / Run Validation / Scope /
+    // exports) and shows a wait cursor for the duration of a background ETABS
+    // operation, so a long read gives visible feedback instead of looking frozen,
+    // and a second click can't start an overlapping operation on the same
+    // EtabsConnection/SapModel while one is already in flight.
+    private void SetBusy(bool busy, string? statusText)
+    {
+        ToolbarPanel.IsEnabled = !busy;
+        Cursor = busy ? Cursors.Wait : Cursors.Arrow;
+        if (statusText != null)
+            SetStatus(statusText);
+    }
+
+    private async Task ReadEtabsAsync()
     {
         try
         {
             var sapModel = _etabs.SapModel;
             if (sapModel == null)
             {
-                ConnectionStateText.Text = "ETABS: Not connected";
+                SetEtabsConnectionState(false, "ETABS: Not connected");
                 SetStatus("ETABS is not connected.");
                 return;
             }
 
-            if (!_etabs.SetUnitsKnMmC())
-                SetStatus("Warning: ETABS units were not confirmed as kN-mm-C.");
+            SetStatus("Reading ETABS model (this can take a while for a large model)...");
 
-            var reader = new EtabsModelReader(sapModel);
-            var columns = reader.ReadColumns();
-            var beams = reader.ReadBeams();
+            var (columns, beams, storyElevations, excludedCount, unitsOk, unitsMessage, storyDiagnostic) = await Task.Run(() =>
+            {
+                var unitsOkResult = _etabs.SetUnitsKnMmC(out var unitsMsg);
+                var reader = new EtabsModelReader(sapModel);
+                var readColumns = reader.ReadColumns();
+                var readBeams = reader.ReadBeams();
+                return (readColumns, readBeams, reader.StoryElevationsMm, reader.ExcludedZeroNameCount,
+                        unitsOkResult, unitsMsg, reader.StoryReadDiagnostic);
+            });
 
             _etabsStoryElevationsMm.Clear();
-            foreach (var pair in reader.StoryElevationsMm)
+            foreach (var pair in storyElevations)
                 _etabsStoryElevationsMm[pair.Key] = pair.Value;
+
+            // The ETABS Story API failing is not fatal: every frame already carries
+            // its story name (read via GetLabelFromName - that is why members import
+            // even when the story table does not), so the story table can be rebuilt
+            // from the geometry. Without this, an empty story table maps every Revit
+            // level to nothing and the whole model reports as Missing.
+            _storyElevationsWereDerived = false;
+            if (_etabsStoryElevationsMm.Count == 0)
+            {
+                var derived = StoryMapper.DeriveStoryElevations(columns.Concat<ElementBase>(beams));
+                foreach (var pair in derived)
+                    _etabsStoryElevationsMm[pair.Key] = pair.Value;
+                _storyElevationsWereDerived = derived.Count > 0;
+            }
+
+            _etabsReadDiagnostics = storyDiagnostic +
+                (_storyElevationsWereDerived
+                    ? $" Rebuilt {_etabsStoryElevationsMm.Count} story elevation(s) from the ETABS members instead."
+                    : "") +
+                (unitsOk ? "" : $" WARNING: ETABS units were not confirmed as kN-mm-C ({unitsMessage}) - ETABS lengths may not be millimetres.");
 
             _etabsColumns = columns;
             _etabsBeams = beams;
@@ -190,7 +314,8 @@ public partial class MainWindow : Window
             EtabsColCount.Text = _etabsColumns.Count.ToString();
             EtabsBeamCount.Text = _etabsBeams.Count.ToString();
 
-            SetStatus($"ETABS read complete: {_etabsColumns.Count} columns, {_etabsBeams.Count} beams. Excluded zero-prefixed frames: {reader.ExcludedZeroNameCount}.");
+            SetStatus($"ETABS read complete: {_etabsColumns.Count} columns, {_etabsBeams.Count} beams, " +
+                      $"{_etabsStoryElevationsMm.Count} stories. Excluded zero-prefixed frames: {excludedCount}. {_etabsReadDiagnostics}");
         }
         catch (Exception ex)
         {
@@ -204,11 +329,19 @@ public partial class MainWindow : Window
         ElevationToleranceMm = Read(ElevationTol, 25),
         DimensionToleranceMm = Read(SectionTol, 5),
         LengthToleranceMm = Read(LengthTol, 25),
-        AngleToleranceDegrees = Read(AngleTol, 1)
+        AngleToleranceDegrees = Read(AngleTol, 1),
+        // Unlike the tolerances above, these are signed systematic corrections
+        // (e.g. ETABS models the beam centerline at a different datum than Revit's
+        // reference level), so they must accept negative values - ReadSigned, not Read.
+        BeamZOffsetMm = ReadSigned(BeamZOffsetTol, 0),
+        ColumnZOffsetMm = ReadSigned(ColumnZOffsetTol, 0)
     };
 
     private static double Read(WpfTextBox b, double d) =>
         double.TryParse(b.Text, out var v) && v >= 0 ? v : d;
+
+    private static double ReadSigned(WpfTextBox b, double d) =>
+        double.TryParse(b.Text, out var v) ? v : d;
 
     private void RunValidation_Click(object s, RoutedEventArgs e)
     {
@@ -222,11 +355,11 @@ public partial class MainWindow : Window
         _all.Clear();
         _floorVisible.Clear();
         UpdateSummary();
-        SetStatus("Reading Revit model before validation...");
+        SetBusy(true, "Reading Revit model before validation...");
         Raise(RevitRequest.ReadModels);
     }
 
-    private void ContinueValidation()
+    private async void ContinueValidation()
     {
         try
         {
@@ -236,7 +369,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            ReadEtabs();
+            await ReadEtabsAsync();
             if (!_etabs.IsConnected)
             {
                 SetStatus("ETABS connection was lost before validation.");
@@ -256,6 +389,10 @@ public partial class MainWindow : Window
         {
             SetStatus("Validation failed: " + ex);
         }
+        finally
+        {
+            SetBusy(false, null);
+        }
     }
 
     private void RunComparisonForSelectedScope()
@@ -265,8 +402,21 @@ public partial class MainWindow : Window
             var revitColumns = _revitColumns.Where(x => _selectedRevitLevels.Contains(x.LevelName)).ToList();
             var revitBeams = _revitBeams.Where(x => _selectedRevitLevels.Contains(x.LevelName)).ToList();
 
-            var filterEtabs = _selectedEtabsStories.Count > 0 &&
-                              _selectedEtabsStories.Count < _etabsStoryElevationsMm.Count;
+            // Filtering is skipped only when it would be a true no-op - every ETABS
+            // story is already represented in the selection, so Where/Contains would
+            // let everything through anyway (a performance shortcut, not a fallback).
+            // Root cause of the bug this replaces: the previous condition also
+            // required _selectedEtabsStories.Count > 0 to filter at all, so when NONE
+            // of the selected Revit levels mapped to any ETABS story (a level ETABS
+            // doesn't model), filtering was skipped entirely and etabsColumns/
+            // etabsBeams silently fell back to the ENTIRE ETABS model instead of an
+            // empty set - turning a single-floor validation into a full-model one and
+            // flooding the results with thousands of unrelated MissingInRevit rows.
+            // Filtering unconditionally on Count < Total fixes this: when
+            // _selectedEtabsStories is empty, Where(x => _selectedEtabsStories.
+            // Contains(...)) correctly yields nothing, exactly as an unmapped
+            // selection should.
+            var filterEtabs = _selectedEtabsStories.Count < _etabsStoryElevationsMm.Count;
 
             var etabsColumns = filterEtabs
                 ? _etabsColumns.Where(x => _selectedEtabsStories.Contains(x.LevelName)).ToList()
@@ -276,6 +426,7 @@ public partial class MainWindow : Window
                 : _etabsBeams;
 
             var t = Tol();
+            _lastTolerance = t;
             var cmp = new ModelComparer();
             _columnReport = cmp.CompareColumns(revitColumns, etabsColumns, t);
             _beamReport = cmp.CompareBeams(revitBeams, etabsBeams, t);
@@ -288,12 +439,18 @@ public partial class MainWindow : Window
                 .ToList();
 
             NormalizeEtabsOnlyResultLevels();
+            RebuildResultIndex();
             UpdateSummary();
             PopulatePlanFloors();
             if (PlanFloorList.Items.Count > 0)
                 PlanFloorList.SelectedIndex = 0;
             UpdateFloorResults();
-            SetStatus($"Validation complete: {_all.Count} comparison results across {_selectedRevitLevels.Count} selected floor(s).");
+
+            if (_selectedEtabsStories.Count == 0)
+                SetStatus($"Validation complete: {_all.Count} comparison result(s), but none of the {_selectedRevitLevels.Count} selected floor(s) mapped to an ETABS story - " +
+                          $"every element in scope will show as missing, which is a mapping problem rather than a coordination problem. {DescribeFloorMapping()} {_etabsReadDiagnostics}");
+            else
+                SetStatus($"Validation complete: {_all.Count} comparison results across {_selectedRevitLevels.Count} selected floor(s). {DescribeFloorMapping()}");
         }
         catch (Exception ex)
         {
@@ -336,45 +493,63 @@ public partial class MainWindow : Window
         BuildFloorMapping();
     }
 
+    // Delegates to Core's StoryMapper: names first, elevation only as a bounded
+    // fallback, with a metre/millimetre unit mismatch detected rather than silently
+    // mismatched. See StoryMapper's own comment for why the previous
+    // nearest-elevation-with-no-limit rule failed on real models.
     private void BuildFloorMapping()
     {
         _revitToEtabsStory.Clear();
         _etabsToRevitLevel.Clear();
+        _storyMatches = new List<StoryMatch>();
 
-        foreach (var level in _revitLevels)
+        if (_revitLevels.Count == 0)
+            return;
+
+        var levels = _revitLevels.Select(x => (RevitLevel: x.Name, RevitElevationMm: x.ElevationMm));
+        _etabsUnitScale = StoryMapper.DetectEtabsUnitScale(levels, _etabsStoryElevationsMm);
+        _storyMatches = StoryMapper.Map(levels, _etabsStoryElevationsMm, etabsUnitScale: _etabsUnitScale);
+
+        foreach (var match in _storyMatches.Where(x => x.IsMatched))
         {
-            if (_etabsStoryElevationsMm.Count == 0)
-                continue;
-
-            var nearest = _etabsStoryElevationsMm
-                .OrderBy(x => Math.Abs(x.Value - level.ElevationMm))
-                .FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(nearest.Key))
-                continue;
-
-            _revitToEtabsStory[level.Name] = nearest.Key;
-
-            if (!_etabsToRevitLevel.TryGetValue(nearest.Key, out var currentLevelName))
-            {
-                _etabsToRevitLevel[nearest.Key] = level.Name;
-                continue;
-            }
-
-            var currentLevel = _revitLevels.FirstOrDefault(x =>
-                string.Equals(x.Name, currentLevelName, StringComparison.OrdinalIgnoreCase));
-
-            var etabsElevation = _etabsStoryElevationsMm.TryGetValue(nearest.Key, out var z)
-                ? z
-                : nearest.Value;
-
-            var currentDifference = currentLevel == default
-                ? double.PositiveInfinity
-                : Math.Abs(etabsElevation - currentLevel.ElevationMm);
-            var newDifference = Math.Abs(etabsElevation - level.ElevationMm);
-
-            if (newDifference < currentDifference)
-                _etabsToRevitLevel[nearest.Key] = level.Name;
+            _revitToEtabsStory[match.RevitLevel] = match.EtabsStory;
+            _etabsToRevitLevel[match.EtabsStory] = match.RevitLevel;
         }
+    }
+
+    // Summarises the mapping outcome for the status bar, so an unmapped model is
+    // explained rather than just showing "no mapped story" against every level.
+    private string DescribeFloorMapping()
+    {
+        if (_storyMatches.Count == 0)
+            return "";
+
+        var matched = _storyMatches.Count(x => x.IsMatched);
+        var byName = _storyMatches.Count(x => x.Kind == StoryMatchKind.Name);
+        var byElevation = _storyMatches.Count(x => x.Kind == StoryMatchKind.Elevation);
+
+        var text = $"Floor mapping: {matched}/{_storyMatches.Count} Revit level(s) mapped " +
+                   $"({byName} by name, {byElevation} by elevation).";
+
+        if (_etabsStoryElevationsMm.Count == 0)
+            text += " No ETABS story elevations are available - check the ETABS connection/story table.";
+        else if (_storyElevationsWereDerived)
+            text += " ETABS story elevations were rebuilt from the members because the ETABS story table could not be read.";
+
+        if (_etabsUnitScale == 1000.0)
+            text += " ETABS elevations look like metres, not millimetres - they were scaled by 1000 for mapping; " +
+                    "set ETABS units to kN-mm-C so member coordinates match too.";
+
+        var drift = _storyMatches
+            .Where(x => x.IsMatched && Math.Abs(x.ElevationDeltaMm) > 1.0)
+            .OrderByDescending(x => Math.Abs(x.ElevationDeltaMm))
+            .Take(3)
+            .Select(x => $"{x.RevitLevel} vs {x.EtabsStory} {x.ElevationDeltaMm:+0;-0;0} mm")
+            .ToList();
+        if (drift.Count > 0)
+            text += " Level elevation differences: " + string.Join("; ", drift) + ".";
+
+        return text;
     }
 
     private bool ShowFloorSelection()
@@ -397,7 +572,9 @@ public partial class MainWindow : Window
                 RevitLevel = x.Name,
                 RevitElevationMm = x.ElevationMm,
                 EtabsStory = _revitToEtabsStory.TryGetValue(x.Name, out var story) ? story : "",
-                EtabsElevationMm = _revitToEtabsStory.TryGetValue(x.Name, out var story2) && _etabsStoryElevationsMm.TryGetValue(story2, out var el) ? el : 0,
+                EtabsElevationMm = _storyMatches.FirstOrDefault(m => string.Equals(m.RevitLevel, x.Name, StringComparison.OrdinalIgnoreCase))?.EtabsElevationMm ?? 0,
+                MatchedByName = _storyMatches.Any(m => string.Equals(m.RevitLevel, x.Name, StringComparison.OrdinalIgnoreCase) && m.Kind == StoryMatchKind.Name),
+                ElevationDeltaMm = _storyMatches.FirstOrDefault(m => string.Equals(m.RevitLevel, x.Name, StringComparison.OrdinalIgnoreCase))?.ElevationDeltaMm ?? 0,
                 IsSelected = true
             })
             .ToList();
@@ -440,28 +617,133 @@ public partial class MainWindow : Window
             RunComparisonForSelectedScope();
     }
 
-    private void AllFloors_Click(object s, RoutedEventArgs e)
-    {
-        if (_revitLevels.Count == 0)
-            PopulateRevitLevels();
+    private void ToggleResultsTable_Click(object s, RoutedEventArgs e) => SetResultsTableVisible(!_resultsTableVisible);
 
-        ApplyFloorScope(_revitLevels.Select(x => new FloorScopeItem
+    private void SetResultsTableVisible(bool visible)
+    {
+        _resultsTableVisible = visible;
+        if (visible)
         {
-            RevitLevel = x.Name,
-            RevitElevationMm = x.ElevationMm,
-            EtabsStory = _revitToEtabsStory.TryGetValue(x.Name, out var story) ? story : "",
-            EtabsElevationMm = _revitToEtabsStory.TryGetValue(x.Name, out var st) && _etabsStoryElevationsMm.TryGetValue(st, out var el) ? el : 0,
-            IsSelected = true
-        }).ToList());
-        if (_all.Count > 0)
-            RunComparisonForSelectedScope();
+            ResultsSplitterRow.Height = _savedSplitterRowHeight;
+            ResultsGridRow.Height = _savedResultsRowHeight;
+            ResultsSplitter.Visibility = Visibility.Visible;
+            ResultsBorder.Visibility = Visibility.Visible;
+            ToggleResultsButton.Content = "Results Table ▴";
+        }
+        else
+        {
+            if (ResultsSplitterRow.Height.Value > 0)
+                _savedSplitterRowHeight = ResultsSplitterRow.Height;
+            if (ResultsGridRow.Height.Value > 0)
+                _savedResultsRowHeight = ResultsGridRow.Height;
+            ResultsSplitterRow.Height = new GridLength(0);
+            ResultsGridRow.Height = new GridLength(0);
+            ResultsSplitter.Visibility = Visibility.Collapsed;
+            ResultsBorder.Visibility = Visibility.Collapsed;
+            ToggleResultsButton.Content = "Results Table ▾";
+        }
+
+        // The plan's viewport just grew or shrank, but PlanViewHost.ActualWidth/
+        // Height won't reflect that until WPF runs its next layout pass - reading
+        // them synchronously here would still see the pre-toggle size. Defer past
+        // that layout pass instead of repeating the same mistake FitPlan_Click's
+        // own guard exists to avoid.
+        if (_planHasContent)
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => FitPlan_Click(null, null)));
     }
+
+    private void ShowLabels_Changed(object s, RoutedEventArgs e)
+    {
+        if (!IsInitialized || !_planHasContent)
+            return;
+        DrawPlan(PlanFloorList.SelectedItem?.ToString() ?? "");
+    }
+
+    private void NextIssue_Click(object s, RoutedEventArgs e) => GoToIssue(_planIssueIndex + 1);
+
+    private void PrevIssue_Click(object s, RoutedEventArgs e) => GoToIssue(_planIssueIndex - 1);
+
+    // Steps through this floor's problems in severity order, selecting each one and
+    // centring the plan on it. Without this, "997 errors" on a 126 m floor gives no
+    // way to actually reach a specific problem member.
+    private void GoToIssue(int index)
+    {
+        if (_planIssues.Count == 0)
+            return;
+
+        _planIssueIndex = ((index % _planIssues.Count) + _planIssues.Count) % _planIssues.Count;
+        var result = _planIssues[_planIssueIndex];
+
+        _selected = result;
+        SyncGridSelection(result);
+        UpdateSelectedPanel();
+        CenterOnResult(result);
+        UpdatePlanIssueUi();
+        SetStatus($"Issue {_planIssueIndex + 1} of {_planIssues.Count}: {result.ElementType} {result.RevitName ?? result.EtabsName} - {result.Status}");
+    }
+
+    private void CenterOnResult(ValidationResult result)
+    {
+        if (!_planAnchorByResult.TryGetValue(result, out var anchor))
+            return;
+        if (PlanViewHost.ActualWidth <= 1 || PlanViewHost.ActualHeight <= 1)
+            return;
+
+        var scale = Math.Max(1e-9, _fitScale * _zoom);
+        _pan = new Point(PlanViewHost.ActualWidth / 2.0 - anchor.X * scale,
+                         PlanViewHost.ActualHeight / 2.0 - anchor.Y * scale);
+        ApplyPlanTransform();
+    }
+
+    // Names WHAT is wrong on this floor (counts per status), which is what turns a
+    // bare "997 errors" total into something actionable.
+    private void UpdatePlanIssueUi()
+    {
+        var hasIssues = _planIssues.Count > 0;
+        PrevIssueButton.IsEnabled = hasIssues;
+        NextIssueButton.IsEnabled = hasIssues;
+
+        if (!hasIssues)
+        {
+            PlanIssuesText.Text = _planHasContent ? "No issues on this floor" : "No issues";
+            PlanIssuePositionText.Text = "—";
+            return;
+        }
+
+        var breakdown = string.Join("  ·  ", _planIssues
+            .GroupBy(x => x.Status)
+            .OrderByDescending(g => g.Count())
+            .Select(g => $"{DescribeStatus(g.Key)} {g.Count()}"));
+
+        PlanIssuesText.Text = $"⚠ {_planIssues.Count} issue(s):  {breakdown}";
+        PlanIssuePositionText.Text = _planIssueIndex < 0 ? $"– / {_planIssues.Count}" : $"{_planIssueIndex + 1} / {_planIssues.Count}";
+    }
+
+    private static string DescribeStatus(ValidationStatus status) => status switch
+    {
+        ValidationStatus.MissingInEtabs => "Missing in ETABS",
+        ValidationStatus.MissingInRevit => "Missing in Revit",
+        ValidationStatus.PositionMismatch => "Position",
+        ValidationStatus.ElevationMismatch => "Elevation",
+        ValidationStatus.SectionMismatch => "Section",
+        ValidationStatus.RotationMismatch => "Rotation",
+        ValidationStatus.GeometryMismatch => "Geometry",
+        ValidationStatus.AmbiguousMatch => "Ambiguous",
+        _ => status.ToString()
+    };
 
     private void ClearFloorView_Click(object s, RoutedEventArgs e)
     {
         PlanFloorList.SelectedIndex = -1;
         PlanCanvas.Children.Clear();
+        _planShapesByResult.Clear();
+        _highlightedShapes.Clear();
+        _planAnchorByResult.Clear();
+        _planIssues = new List<ValidationResult>();
+        _planIssueIndex = -1;
         _planHasContent = false;
+        PlanFloorHeaderText.Text = "—";
+        UpdatePlanIssueUi();
         SetStatus("Floor view cleared.");
     }
 
@@ -509,17 +791,58 @@ public partial class MainWindow : Window
         => _all.FirstOrDefault(x => string.Equals(x.RevitElementId, id, StringComparison.OrdinalIgnoreCase) ||
                                      string.Equals(x.EtabsElementId, id, StringComparison.OrdinalIgnoreCase));
 
+    // Indexed rather than scanned: this is called once per drawn member, and a
+    // linear FirstOrDefault over _all made a floor with ~1000 members cost ~1M
+    // string comparisons per redraw (far worse on a 16k-beam model), which is
+    // paid again on every floor switch, zoom-triggered redraw and label toggle.
+    private void RebuildResultIndex()
+    {
+        _resultByRevitId.Clear();
+        _resultByEtabsId.Clear();
+        foreach (var result in _all)
+        {
+            if (!string.IsNullOrWhiteSpace(result.RevitElementId))
+                _resultByRevitId[result.RevitElementId!] = result;
+            if (!string.IsNullOrWhiteSpace(result.EtabsElementId))
+                _resultByEtabsId[result.EtabsElementId!] = result;
+        }
+    }
+
     private ValidationResult? FindResultForPair(string id, bool etabs)
-        => _all.FirstOrDefault(x => etabs
-            ? string.Equals(x.EtabsElementId, id, StringComparison.OrdinalIgnoreCase)
-            : string.Equals(x.RevitElementId, id, StringComparison.OrdinalIgnoreCase));
+    {
+        var index = etabs ? _resultByEtabsId : _resultByRevitId;
+        return index.TryGetValue(id, out var result) ? result : null;
+    }
+
+    // A metre of centroid difference is far beyond any plausible modelling tolerance
+    // but still well within "same building, different origin", so it is reported as
+    // a coordinate-system warning rather than as N member mismatches. See
+    // PlanProjection.CentroidOffset for why this matters.
+    private static string PlanOriginWarning(IReadOnlyList<Point3D> revitPoints, IReadOnlyList<Point3D> etabsPoints)
+    {
+        var offset = PlanProjection.CentroidOffset(revitPoints, etabsPoints);
+        if (offset == null || offset.Value.OffsetMm <= 1000.0)
+            return "";
+
+        return $"   ·   ⚠ Revit/ETABS plan centroids differ by {offset.Value.OffsetMm / 1000.0:F1} m " +
+               $"(ΔX {offset.Value.DeltaXMm / 1000.0:F1}, ΔY {offset.Value.DeltaYMm / 1000.0:F1}) - check the coordinate setup, not the tolerances";
+    }
 
     private void DrawPlan(string level)
     {
         PlanCanvas.Children.Clear();
+        _planShapesByResult.Clear();
+        _highlightedShapes.Clear();
+        _planAnchorByResult.Clear();
+        _planIssues = new List<ValidationResult>();
+        _planIssueIndex = -1;
         _planHasContent = false;
         if (string.IsNullOrWhiteSpace(level))
+        {
+            PlanFloorHeaderText.Text = "—";
+            UpdatePlanIssueUi();
             return;
+        }
 
         var mappedStory = _revitToEtabsStory.TryGetValue(level, out var story) ? story : "";
         var revB = _revitBeams.Where(x => string.Equals(x.LevelName, level, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -531,56 +854,161 @@ public partial class MainWindow : Window
             ? _etabsColumns.Where(x => string.Equals(x.LevelName, level, StringComparison.OrdinalIgnoreCase)).ToList()
             : _etabsColumns.Where(x => string.Equals(x.LevelName, mappedStory, StringComparison.OrdinalIgnoreCase)).ToList();
 
-        var points = new List<Point3D>();
-        points.AddRange(revB.SelectMany(x => new[] { x.StartPoint, x.EndPoint }));
-        points.AddRange(etaB.SelectMany(x => new[] { x.StartPoint, x.EndPoint }));
-        points.AddRange(revC.Select(x => x.CenterPoint));
-        points.AddRange(etaC.Select(x => x.CenterPoint));
+        var storyLabel = string.IsNullOrWhiteSpace(mappedStory) ? "no mapped ETABS story" : $"ETABS \"{mappedStory}\"";
 
-        if (points.Count == 0)
+        // Garbage coordinates (NaN/Infinity from a failed read) would otherwise
+        // poison Min/Max and make the whole canvas un-renderable, so they are kept
+        // out of the bounds calculation.
+        var revitPoints = revB.SelectMany(x => new[] { x.StartPoint, x.EndPoint })
+            .Concat(revC.Select(x => x.CenterPoint)).ToList();
+        var etabsPoints = etaB.SelectMany(x => new[] { x.StartPoint, x.EndPoint })
+            .Concat(etaC.Select(x => x.CenterPoint)).ToList();
+
+        // The canvas coordinate system is NORMALIZED, not millimetres - see
+        // PlanProjection for why (glyphs are sized in screen pixels, so a raw-mm
+        // canvas made every member sub-pixel on a real-size floor). Non-finite
+        // coordinates are excluded there too.
+        var projection = PlanProjection.Create(revitPoints.Concat(etabsPoints));
+        if (projection == null)
+        {
+            PlanFloorHeaderText.Text = $"{level}  →  {storyLabel}   ·   nothing to draw on this floor";
             return;
+        }
 
-        var minX = points.Min(p => p.X);
-        var maxX = points.Max(p => p.X);
-        var minY = points.Min(p => p.Y);
-        var maxY = points.Max(p => p.Y);
-        var worldW = Math.Max(1, maxX - minX);
-        var worldH = Math.Max(1, maxY - minY);
-        PlanCanvas.Width = worldW + 40;
-        PlanCanvas.Height = worldH + 40;
+        PlanCanvas.Width = projection.CanvasWidth;
+        PlanCanvas.Height = projection.CanvasHeight;
 
-        Point Map(Point3D p) => new(p.X - minX + 20, maxY - p.Y + 20);
+        PlanFloorHeaderText.Text =
+            $"{level}  →  {storyLabel}   ·   Columns {revC.Count} Revit / {etaC.Count} ETABS   ·   Beams {revB.Count} Revit / {etaB.Count} ETABS" +
+            $"   ·   Extent {projection.WorldWidthMm / 1000.0:F1} × {projection.WorldHeightMm / 1000.0:F1} m{PlanOriginWarning(revitPoints, etabsPoints)}";
 
-        foreach (var b in revB)
+        Point Map(Point3D p)
+        {
+            var mapped = projection.Map(p);
+            return new Point(mapped.X, mapped.Y);
+        }
+
+        // "Problems only" hides members that passed, so the failures aren't lost in
+        // a field of matched geometry. Members with no result at all are kept: an
+        // unvalidated member is a question, not a pass.
+        bool Include(string id, bool etabs)
+        {
+            if (ProblemsOnly.IsChecked != true)
+                return true;
+            var result = FindResultForPair(id, etabs);
+            return result == null || result.Status != ValidationStatus.Matched;
+        }
+
+        foreach (var b in revB.Where(x => Include(x.Id, false)))
             AddBeamVisual(b, false, Map(b.StartPoint), Map(b.EndPoint));
-        foreach (var b in etaB)
+        foreach (var b in etaB.Where(x => Include(x.Id, true)))
             AddBeamVisual(b, true, Map(b.StartPoint), Map(b.EndPoint));
-        foreach (var c in revC)
+        foreach (var c in revC.Where(x => Include(x.Id, false)))
             AddColumnVisual(c, false, Map(c.CenterPoint));
-        foreach (var c in etaC)
+        foreach (var c in etaC.Where(x => Include(x.Id, true)))
             AddColumnVisual(c, true, Map(c.CenterPoint));
 
-        FitPlan_Click(null, null);
+        // Ordered most-severe-first so stepping through issues starts with what
+        // actually matters, and stably by name so the order is reproducible.
+        _planIssues = _planAnchorByResult.Keys
+            .Where(x => x.Status != ValidationStatus.Matched)
+            .OrderByDescending(x => x.Severity)
+            .ThenBy(x => x.ElementType, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.RevitName ?? x.EtabsName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _planIssueIndex = -1;
+
+        // _planHasContent must be set before the fit runs, not after: FitPlan_Click
+        // uses it as its "is there anything to fit" guard. On the very first draw
+        // after the window opens (or after a resize), PlanViewHost may not have been
+        // laid out yet - ActualWidth/Height still read 0 - and FitPlan_Click below
+        // detects that and retries itself once real layout is available, instead of
+        // silently fitting against a placeholder-sized viewport and leaving the plan
+        // permanently tiny/blank (the root cause of the plan appearing empty).
         _planHasContent = true;
+        FitPlan_Click(null, null);
+        HighlightSelectedOnPlan();
+        UpdatePlanIssueUi();
     }
+
+    // One color per mismatch type (not just a single generic "problem" color) so a
+    // glance at the plan tells you WHAT kind of coordination issue a member has,
+    // matching the same legend shown in the plan view's bottom-left corner.
+    private static Brush StatusBrush(ValidationStatus status) => status switch
+    {
+        ValidationStatus.PositionMismatch => Brushes.Gold,
+        ValidationStatus.ElevationMismatch => Brushes.Crimson,
+        ValidationStatus.SectionMismatch => Brushes.MediumPurple,
+        ValidationStatus.RotationMismatch => Brushes.Teal,
+        ValidationStatus.AmbiguousMatch => Brushes.DeepPink,
+        ValidationStatus.MissingInRevit or ValidationStatus.MissingInEtabs => Brushes.Black,
+        _ => Brushes.Crimson
+    };
 
     private void AddBeamVisual(BeamElement beam, bool etabs, Point a, Point b)
     {
+        var result = FindResultForPair(beam.Id, etabs);
+        var problem = result != null && result.Status != ValidationStatus.Matched;
+
+        // A translucent red halo drawn under the type-colored line makes every
+        // mismatch - of any kind - unmistakably read as "red" at a glance. The
+        // crisp line drawn on top still carries the specific mismatch-type color
+        // (see StatusBrush/the legend), so a Position vs. Section vs. Elevation
+        // problem is still distinguishable without a second click.
+        if (problem)
+        {
+            var halo = new Line
+            {
+                X1 = a.X,
+                Y1 = a.Y,
+                X2 = b.X,
+                Y2 = b.Y,
+                Stroke = Brushes.Red,
+                StrokeThickness = (etabs ? 2.0 : 3.0) + 6,
+                Opacity = 0.30,
+                IsHitTestVisible = false
+            };
+            PlanCanvas.Children.Add(halo);
+        }
+
         var line = new Line
         {
             X1 = a.X,
             Y1 = a.Y,
             X2 = b.X,
             Y2 = b.Y,
-            Stroke = etabs ? Brushes.SlateGray : Brushes.SteelBlue,
-            StrokeThickness = etabs ? 2.0 : 3.0,
+            Stroke = problem ? StatusBrush(result!.Status) : (etabs ? Brushes.SlateGray : Brushes.SteelBlue),
+            StrokeThickness = problem ? 3.5 : (etabs ? 2.0 : 3.0),
             Opacity = 0.9,
-            Tag = FindResultForPair(beam.Id, etabs)
+            Tag = result
         };
         if (etabs)
             line.StrokeDashArray = new DoubleCollection { 7, 5 };
-        AttachVisual(line, beam.Name, etabs, beam.Id);
         PlanCanvas.Children.Add(line);
+        RegisterPlanShape(result, line);
+        RegisterPlanAnchor(result, new Point((a.X + b.X) / 2.0, (a.Y + b.Y) / 2.0));
+
+        // A 2-3 px stroke is close to unclickable, so the click target is a separate
+        // transparent line laid over it. Transparent (unlike null) is hit-testable
+        // in WPF, so this widens the target to ~14 px without changing the drawing.
+        var hit = new Line
+        {
+            X1 = a.X,
+            Y1 = a.Y,
+            X2 = b.X,
+            Y2 = b.Y,
+            Stroke = Brushes.Transparent,
+            StrokeThickness = 14
+        };
+        AttachVisual(hit, beam, etabs, result);
+        PlanCanvas.Children.Add(hit);
+
+        // Only label the Revit side of a matched/mismatched pair - the ETABS shape
+        // for that same result sits almost on top of it, so a second label there
+        // would just overlap. An ETABS shape with no Revit counterpart (Missing in
+        // Revit) still gets labeled, since it has no Revit-side label to rely on.
+        if (!etabs || (result != null && string.IsNullOrWhiteSpace(result.RevitElementId)))
+            AddPlanLabel(beam.Name, new Point((a.X + b.X) / 2.0, (a.Y + b.Y) / 2.0), 6, -14, etabs ? Brushes.SlateGray : Brushes.SteelBlue);
     }
 
     private void AddColumnVisual(ColumnElement column, bool etabs, Point p)
@@ -588,37 +1016,157 @@ public partial class MainWindow : Window
         const double radius = 6;
         var result = FindResultForPair(column.Id, etabs);
         var problem = result != null && result.Status != ValidationStatus.Matched;
+
+        if (problem)
+        {
+            const double haloRadius = radius + 5;
+            var halo = new Ellipse
+            {
+                Width = haloRadius * 2,
+                Height = haloRadius * 2,
+                Fill = Brushes.Red,
+                Opacity = 0.30,
+                IsHitTestVisible = false
+            };
+            Canvas.SetLeft(halo, p.X - haloRadius);
+            Canvas.SetTop(halo, p.Y - haloRadius);
+            PlanCanvas.Children.Add(halo);
+        }
+
+        var problemBrush = problem ? StatusBrush(result!.Status) : null;
         var ellipse = new Ellipse
         {
             Width = radius * 2,
             Height = radius * 2,
-            Stroke = problem ? Brushes.Red : (etabs ? Brushes.DarkOrange : Brushes.SteelBlue),
+            Stroke = problemBrush ?? (etabs ? Brushes.DarkOrange : Brushes.SteelBlue),
             Fill = etabs ? Brushes.Transparent : (problem ? Brushes.MistyRose : Brushes.LightSteelBlue),
-            StrokeThickness = 2,
+            StrokeThickness = problem ? 3 : 2,
             Tag = result
         };
         Canvas.SetLeft(ellipse, p.X - radius);
         Canvas.SetTop(ellipse, p.Y - radius);
-        AttachVisual(ellipse, column.Name, etabs, column.Id);
         PlanCanvas.Children.Add(ellipse);
+        RegisterPlanShape(result, ellipse);
+        RegisterPlanAnchor(result, p);
+
+        // Same reasoning as the beam hit line: a transparent, larger click target
+        // over the glyph, so selecting a column doesn't demand pixel accuracy.
+        const double hitRadius = radius + 5;
+        var hit = new Ellipse
+        {
+            Width = hitRadius * 2,
+            Height = hitRadius * 2,
+            Fill = Brushes.Transparent
+        };
+        Canvas.SetLeft(hit, p.X - hitRadius);
+        Canvas.SetTop(hit, p.Y - hitRadius);
+        AttachVisual(hit, column, etabs, result);
+        PlanCanvas.Children.Add(hit);
+
+        if (!etabs || (result != null && string.IsNullOrWhiteSpace(result.RevitElementId)))
+            AddPlanLabel(column.Name, p, radius + 3, -radius - 3, etabs ? Brushes.DarkOrange : Brushes.SteelBlue);
     }
 
-    private void AttachVisual(FrameworkElement element, string name, bool etabs, string id)
+    private void RegisterPlanShape(ValidationResult? result, Shape shape)
+    {
+        if (result == null)
+            return;
+        if (!_planShapesByResult.TryGetValue(result, out var list))
+            _planShapesByResult[result] = list = new List<Shape>();
+        list.Add(shape);
+    }
+
+    // The Revit side wins when both are drawn, so "go to issue" centres on the
+    // Revit member where one exists and on the ETABS member otherwise.
+    private void RegisterPlanAnchor(ValidationResult? result, Point anchor)
+    {
+        if (result == null || _planAnchorByResult.ContainsKey(result))
+            return;
+        _planAnchorByResult[result] = anchor;
+    }
+
+    // Draws the member's own name directly on the plan (offset from its anchor
+    // point by dx/dy) so it can be identified at a glance without opening the
+    // results table - this is what "everything in the plan" needs beyond just
+    // color-coded shapes. Gated by the Labels checkbox since it gets busy on a
+    // real-size floor with hundreds of members.
+    private void AddPlanLabel(string name, Point anchor, double dx, double dy, Brush color)
+    {
+        if (ShowLabels.IsChecked != true || string.IsNullOrWhiteSpace(name))
+            return;
+        var label = new TextBlock
+        {
+            Text = name,
+            FontSize = 10,
+            Foreground = color,
+            Background = Brushes.White,
+            Opacity = 0.92,
+            IsHitTestVisible = false
+        };
+        Canvas.SetLeft(label, anchor.X + dx);
+        Canvas.SetTop(label, anchor.Y + dy);
+        Panel.SetZIndex(label, 50);
+        PlanCanvas.Children.Add(label);
+    }
+
+    // What a plan click resolves to. Carrying the element itself (not just the
+    // ValidationResult) means a member with NO result - which used to leave the
+    // shape completely inert, clicking it doing nothing at all - can still report
+    // what it is and why it has no result.
+    private sealed record PlanPick(ValidationResult? Result, ElementBase Element, bool IsEtabs);
+
+    private void AttachVisual(FrameworkElement element, ElementBase source, bool etabs, ValidationResult? result)
     {
         element.Cursor = Cursors.Hand;
-        element.ToolTip = etabs ? $"ETABS: {name}\nID: {id}\nClick for coordination details" : $"Revit: {name}\nID: {id}\nClick for coordination details";
+        element.Tag = new PlanPick(result, source, etabs);
+        var side = etabs ? "ETABS" : "Revit";
+        var statusNote = result == null
+            ? "\nNo validation result for this member"
+            : result.Status == ValidationStatus.Matched ? "\nMatched" : $"\n{result.Status}";
+        element.ToolTip = $"{side}: {source.Name}\nID: {source.Id}{statusNote}\nClick to select · double-click for full details";
         element.MouseLeftButtonDown += PlanVisual_Click;
     }
 
+    // Single click selects (updates the side panel and highlights on the plan);
+    // double-click opens the details dialog. Previously every single click threw up
+    // a modal, and a click on a member without a result did nothing whatsoever.
     private void PlanVisual_Click(object sender, MouseButtonEventArgs e)
     {
-        if (sender is FrameworkElement element && element.Tag is ValidationResult result)
+        if (sender is not FrameworkElement element || element.Tag is not PlanPick pick)
+            return;
+
+        e.Handled = true;
+
+        if (pick.Result == null)
         {
-            _selected = result;
+            _selected = null;
             UpdateSelectedPanel();
-            OpenDetails(result);
-            e.Handled = true;
+            var side = pick.IsEtabs ? "ETABS" : "Revit";
+            SelectedTypeText.Text = $"{side}: {pick.Element.Name}";
+            SelectedStatusText.Text = "No validation result for this member";
+            SelectedReasonText.Text =
+                $"This {side} member was drawn from the model but no comparison result references its id ({pick.Element.Id}). " +
+                "That normally means it was outside the validated scope - check that the floor selected in Validation Scope covers this level.";
+            SetStatus($"{side} member {pick.Element.Name} has no validation result (outside the validated scope?).");
+            return;
         }
+
+        _selected = pick.Result;
+        SyncGridSelection(pick.Result);
+        UpdateSelectedPanel();
+
+        if (e.ClickCount >= 2)
+            OpenDetails(pick.Result);
+    }
+
+    // Keeps the results table in step with a plan click, so the two views never
+    // disagree about which member is selected.
+    private void SyncGridSelection(ValidationResult result)
+    {
+        if (!_floorVisible.Contains(result))
+            return;
+        if (!ReferenceEquals(FloorResultsGrid.SelectedItem, result))
+            FloorResultsGrid.SelectedItem = result;
     }
 
     private void UpdateSelectedPanel()
@@ -633,6 +1181,7 @@ public partial class MainWindow : Window
             SelectedLocationText.Text = "Revit: —\nETABS: —";
             SelectedDeltaText.Text = "—";
             SelectedReasonText.Text = "Select a beam or column in the plan.";
+            HighlightSelectedOnPlan();
             return;
         }
 
@@ -647,6 +1196,35 @@ public partial class MainWindow : Window
         SelectedLocationText.Text = $"Revit: {FormatLocation(revit)}\nETABS: {FormatLocation(etabs)}";
         SelectedDeltaText.Text = $"ΔPos   {_selected.PositionDeltaMm:F1} mm\nΔElev  {_selected.ElevationDeltaMm:F1} mm\nΔW     {_selected.WidthDeltaMm:F1} mm\nΔD     {_selected.DepthDeltaMm:F1} mm\nΔL     {_selected.LengthDeltaMm:F1} mm\nΔRot   {_selected.RotationDeltaDeg:F1}°";
         SelectedReasonText.Text = BuildReason(_selected, revit, etabs);
+        HighlightSelectedOnPlan();
+    }
+
+    // Keeps the plan in sync with whichever member is "selected" - by a plan click
+    // (PlanVisual_Click) or a results-grid row click (FloorResultsGrid_SelectionChanged)
+    // both funnel through UpdateSelectedPanel, so either path highlights the same
+    // Revit+ETABS pair of shapes on the plan with a glow, not just the side panel text.
+    private void HighlightSelectedOnPlan()
+    {
+        foreach (var shape in _highlightedShapes)
+            shape.Effect = null;
+        _highlightedShapes.Clear();
+
+        if (_selected == null || !_planShapesByResult.TryGetValue(_selected, out var shapes))
+            return;
+
+        var glow = new DropShadowEffect
+        {
+            Color = Colors.Gold,
+            BlurRadius = 20,
+            ShadowDepth = 0,
+            Opacity = 1.0
+        };
+        foreach (var shape in shapes)
+        {
+            shape.Effect = glow;
+            Panel.SetZIndex(shape, 100);
+            _highlightedShapes.Add(shape);
+        }
     }
 
     private ElementBase? GetRevitElement(ValidationResult r)
@@ -684,8 +1262,12 @@ public partial class MainWindow : Window
         return $"Mid: X {c.X:F1}, Y {c.Y:F1}, Z {c.Z:F1} mm\nA:   X {element.StartPoint.X:F1}, Y {element.StartPoint.Y:F1}, Z {element.StartPoint.Z:F1} mm\nB:   X {element.EndPoint.X:F1}, Y {element.EndPoint.Y:F1}, Z {element.EndPoint.Z:F1} mm";
     }
 
-    private static string BuildReason(ValidationResult result, ElementBase? revit, ElementBase? etabs)
+    // Instance method (not static) so it can report the tolerances/offsets that were
+    // actually in effect for the run that produced this result (_lastTolerance),
+    // which is what a user needs to answer "why does this show a mismatch".
+    private string BuildReason(ValidationResult result, ElementBase? revit, ElementBase? etabs)
     {
+        var t = _lastTolerance;
         if (result.Status == ValidationStatus.Matched)
             return "Matched: the plan geometry correspondence was established and all required validation checks are within the configured tolerances. Span-length difference is shown only as a diagnostic for analytical/physical end offsets.";
         if (result.Status == ValidationStatus.MissingInEtabs)
@@ -693,11 +1275,19 @@ public partial class MainWindow : Window
         if (result.Status == ValidationStatus.MissingInRevit)
             return "Missing in Revit: the ETABS member did not find a valid Revit counterpart through the plan-geometry identity gate.";
         if (result.Status == ValidationStatus.SectionMismatch)
-            return $"Section mismatch. Revit = {FormatSection(revit, false)}; ETABS = {FormatSection(etabs, true)}.";
+            return $"Section mismatch (tolerance ±{t.DimensionToleranceMm:F0} mm). Revit = {FormatSection(revit, false)}; ETABS = {FormatSection(etabs, true)}.";
         if (result.Status == ValidationStatus.PositionMismatch)
-            return $"Position mismatch. Revit location = {FormatLocation(revit)}; ETABS location = {FormatLocation(etabs)}.";
+            return $"Position mismatch: {result.PositionDeltaMm:F1} mm (tolerance ±{t.PositionToleranceMm:F0} mm). Revit location = {FormatLocation(revit)}; ETABS location = {FormatLocation(etabs)}.";
+        if (result.Status == ValidationStatus.RotationMismatch)
+            return $"Rotation mismatch: {result.RotationDeltaDeg:F1}° (tolerance ±{t.AngleToleranceDegrees:F1}°).";
         if (result.Status == ValidationStatus.ElevationMismatch)
-            return $"Elevation mismatch. The compared elevation difference is {result.ElevationDeltaMm:F1} mm. See the two model locations below for the actual Z values.";
+        {
+            var offset = result.ElementType == "Beam" ? t.BeamZOffsetMm : t.ColumnZOffsetMm;
+            var offsetNote = offset == 0
+                ? $"No {result.ElementType} Z-Offset correction is currently configured."
+                : $"A {offset:+0.#;-0.#;0} mm {result.ElementType} Z-Offset correction is currently applied.";
+            return $"Elevation mismatch: {result.ElevationDeltaMm:F1} mm (tolerance ±{t.ElevationToleranceMm:F0} mm). {offsetNote} If this same delta repeats across most/all members of this type, it is usually a systematic modeling-datum difference between Revit and ETABS rather than N separate errors - adjust the {result.ElementType} Z-Offset field in the tolerance bar to correct for it, then re-run. See the two model locations below for the actual Z values.";
+        }
         return result.Message;
     }
 
@@ -749,8 +1339,21 @@ public partial class MainWindow : Window
 
     private void FitPlan_Click(object? s, RoutedEventArgs? e)
     {
-        if (!_planHasContent && (PlanCanvas.Width <= 0 || PlanCanvas.Height <= 0))
+        if (!_planHasContent)
             return;
+
+        // PlanViewHost may not have been arranged yet (e.g. the very first draw
+        // right after RunValidation_Click, before WPF has run a layout pass over
+        // this newly-populated panel) - ActualWidth/Height would read 0 here.
+        // Fitting against that produces a near-zero scale that makes the whole
+        // plan invisible, and nothing else would ever trigger a re-fit unless the
+        // user happens to resize the window afterward. Retry once real layout is
+        // available instead of silently committing to a bad fit.
+        if (PlanViewHost.ActualWidth <= 1 || PlanViewHost.ActualHeight <= 1)
+        {
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => FitPlan_Click(null, null)));
+            return;
+        }
 
         var viewW = Math.Max(100, PlanViewHost.ActualWidth - 30);
         var viewH = Math.Max(100, PlanViewHost.ActualHeight - 30);
@@ -821,14 +1424,36 @@ public partial class MainWindow : Window
         ApplyPlanTransform();
     }
 
+    // Capture is taken on PlanViewHost (the Border), so while a middle-drag pan is
+    // active the mouse events route to PlanViewHost - the Canvas handler below may
+    // never see the release at all. Ending the pan on any button-up, plus the
+    // LostMouseCapture safety net, prevents the state this used to get stuck in:
+    // _isPanning left true with capture still held by the Border, after which every
+    // click landed on the Border instead of a member and nothing in the plan could
+    // be selected again until the window was reopened.
     private void PlanCanvas_MouseUp(object s, MouseButtonEventArgs e)
     {
-        if (_isPanning && e.ChangedButton == MouseButton.Middle)
-        {
-            _isPanning = false;
+        if (!_isPanning)
+            return;
+        EndPan();
+        e.Handled = true;
+    }
+
+    private void PlanViewHost_MouseUp(object s, MouseButtonEventArgs e)
+    {
+        if (!_isPanning)
+            return;
+        EndPan();
+        e.Handled = true;
+    }
+
+    private void PlanViewHost_LostMouseCapture(object s, MouseEventArgs e) => _isPanning = false;
+
+    private void EndPan()
+    {
+        _isPanning = false;
+        if (PlanViewHost.IsMouseCaptured)
             PlanViewHost.ReleaseMouseCapture();
-            e.Handled = true;
-        }
     }
 
     private void PlanCanvas_SizeChanged(object s, SizeChangedEventArgs e)
@@ -867,20 +1492,6 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus("CSV export failed: " + ex.Message);
-        }
-    }
-
-    private void ExportJson_Click(object s, RoutedEventArgs e)
-    {
-        try
-        {
-            var path = IOPath.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "RevitEtabsValidation.json");
-            File.WriteAllText(path, JsonSerializer.Serialize(_all, new JsonSerializerOptions { WriteIndented = true }));
-            SetStatus("JSON exported: " + path);
-        }
-        catch (Exception ex)
-        {
-            SetStatus("JSON export failed: " + ex.Message);
         }
     }
 

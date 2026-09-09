@@ -66,11 +66,11 @@ Write-Host "ETABS path:  $EtabsInstallPath" -ForegroundColor Cyan
 Write-Host "==============================================" -ForegroundColor Cyan
 
 Write-Host "Cleaning target build..." -ForegroundColor Cyan
-dotnet clean $project -c $Configuration -f $TargetFramework --nologo
+dotnet clean $project -c $Configuration -f $TargetFramework -p:BuildLegacy=true --nologo
 if ($LASTEXITCODE -ne 0) { throw "dotnet clean failed with exit code $LASTEXITCODE." }
 
 Write-Host "Building $Target ($Configuration)..." -ForegroundColor Cyan
-dotnet build $project -c $Configuration -f $TargetFramework --nologo
+dotnet build $project -c $Configuration -f $TargetFramework -p:BuildLegacy=true --nologo
 if ($LASTEXITCODE -ne 0) { throw "dotnet build failed with exit code $LASTEXITCODE." }
 
 $dll = Join-Path $projectRoot ("bin\{0}\{1}\RevitEtabsValidator.dll" -f $Configuration, $TargetFramework)

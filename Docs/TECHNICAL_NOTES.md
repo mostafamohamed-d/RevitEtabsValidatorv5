@@ -12,7 +12,7 @@ The current implementation is targeted at rectangular RC columns and beams. Revi
 For non-rectangular frames, the tool will still extract identity and geometry but section dimensions may be zero; those cases should be treated as unsupported rather than as proof that the member is wrong.
 
 ## ETABS COM
-The connector intentionally uses COM late binding, which avoids a compile-time dependency on a specific ETABS API assembly. At runtime it uses the `CSI.ETABS.API.ETABSObject` ProgID and can attach to an active COM object through `oleaut32!GetActiveObject`; otherwise it can instantiate and start ETABS.
+`EtabsConnection` uses COM late binding to acquire the top-level `cOAPI` object: at runtime it looks up the `CSI.ETABS.API.ETABSObject` ProgID and either attaches to an active instance through `oleaut32!GetActiveObject` or instantiates and starts ETABS. Once connected, `EtabsModelReader` calls the typed ETABSv1 interfaces (`cSapModel`, `cFrameObj`, `cPointObj`, `cPropFrame`, `cStory`) directly rather than through `dynamic`/reflection, because ByRef COM parameters do not work through a `dynamic` call site (CS1975). This requires a compile-time reference to `ETABSv1.dll`, so `EtabsAssemblyResolver` resolves and loads the correct installed version (ETABS 21 for the `net48` target, ETABS 22 for `net8.0-windows`) at runtime before any ETABSv1 type is touched, keeping the project deployable without redistributing CSI's assembly.
 
 CSI's API documentation demonstrates the `cOAPI -> SapModel` relationship and COM creation pattern. Keep the ETABS version consistent on machines used for production automation.
 

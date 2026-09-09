@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using RevitEtabsValidator.Core.Geometry;
 using RevitEtabsValidator.Core.Models;
 using RevitEtabsValidator.Core.Validation;
@@ -25,22 +28,33 @@ public sealed class ModelComparer
     {
         var report = new ValidationReport();
         var remaining = new HashSet<string>(etabs.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
-        var index = BuildIndex(etabs, tol);
+        var searchRadius = IdentityPositionToleranceMm(tol);
+        var index = BuildIndex(etabs, searchRadius);
 
         var pending = revit.Select(r =>
         {
             var candidates = index.Query(
-                    r.CenterPoint.X - tol.PositionToleranceMm,
-                    r.CenterPoint.Y - tol.PositionToleranceMm,
-                    r.CenterPoint.X + tol.PositionToleranceMm,
-                    r.CenterPoint.Y + tol.PositionToleranceMm)
+                    r.CenterPoint.X - searchRadius,
+                    r.CenterPoint.Y - searchRadius,
+                    r.CenterPoint.X + searchRadius,
+                    r.CenterPoint.Y + searchRadius)
                 .Where(e => remaining.Contains(e.Id) && ColumnIdentityGate(r, e, tol))
                 .Select(e => (e, Score: ColumnScore(r, e, tol)))
                 .OrderBy(x => x.Score)
                 .ToList();
             return (r, candidates);
         })
-        .OrderBy(x => x.candidates.Count)
+        // Process the strongest candidate matches first (globally, not just within
+        // one Revit item's own candidate list). The identity gate is intentionally
+        // wider than the pass/fail tolerance (see IdentityPositionToleranceMm), so a
+        // genuinely drifted element can be the ONLY candidate for an ETABS element
+        // that is also an exact match for a different Revit element. Sorting by
+        // "fewest candidates first" alone let that drifted element claim the shared
+        // ETABS id before the true exact match was considered, falsely reporting the
+        // real match as missing. Sorting by best score first ensures the exact match
+        // always claims its ETABS counterpart before a weaker candidate can.
+        .OrderBy(x => x.candidates.Count == 0 ? double.MaxValue : x.candidates[0].Score)
+        .ThenBy(x => x.candidates.Count)
         .ThenBy(x => x.r.LevelName, StringComparer.OrdinalIgnoreCase)
         .ThenBy(x => x.r.Name, StringComparer.OrdinalIgnoreCase)
         .ToList();
@@ -76,8 +90,8 @@ public sealed class ModelComparer
     {
         var report = new ValidationReport();
         var remaining = new HashSet<string>(etabs.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
-        var index = BuildIndex(etabs, tol);
-        var expand = Math.Max(0.0, tol.PositionToleranceMm + tol.LengthToleranceMm);
+        var expand = Math.Max(0.0, IdentityPositionToleranceMm(tol) + tol.LengthToleranceMm);
+        var index = BuildIndex(etabs, expand);
 
         var pending = revit.Select(r =>
         {
@@ -93,7 +107,11 @@ public sealed class ModelComparer
                 .ToList();
             return (r, candidates);
         })
-        .OrderBy(x => x.candidates.Count)
+        // See the matching comment in CompareColumns: process the strongest
+        // candidate matches first so an exact match always claims its ETABS
+        // counterpart before a weaker, merely-in-range candidate can.
+        .OrderBy(x => x.candidates.Count == 0 ? double.MaxValue : x.candidates[0].Score)
+        .ThenBy(x => x.candidates.Count)
         .ThenBy(x => x.r.LevelName, StringComparer.OrdinalIgnoreCase)
         .ThenBy(x => x.r.Name, StringComparer.OrdinalIgnoreCase)
         .ToList();
@@ -125,24 +143,43 @@ public sealed class ModelComparer
         return report;
     }
 
-    private static SpatialGridIndex<T> BuildIndex<T>(IReadOnlyList<T> values, ValidationTolerance tol) where T : ElementBase
+    private static SpatialGridIndex<T> BuildIndex<T>(IReadOnlyList<T> values, double searchRadiusMm) where T : ElementBase
     {
-        var cellSize = Math.Max(500.0, Math.Max(tol.PositionToleranceMm, 1.0) * 8.0);
+        var cellSize = Math.Max(500.0, Math.Max(searchRadiusMm, 1.0) * 8.0);
         var index = new SpatialGridIndex<T>(cellSize);
         foreach (var value in values)
             index.Add(value);
         return index;
     }
 
+    // The identity gate uses a widened search window (see ValidationTolerance.
+    // IdentityGateMultiplier) so an element that drifted past the strict
+    // pass/fail tolerance is still recognized as the same physical element and
+    // reported as a PositionMismatch/RotationMismatch with an actionable delta,
+    // rather than as two unrelated Missing entries. A floor is applied because
+    // multiplying by IdentityGateMultiplier has no widening effect when a user
+    // configures a zero (or near-zero) strict tolerance for a stricter pass/fail
+    // check: without a floor, even a 1 mm/1 degree drift at PositionToleranceMm=0
+    // would still fall outside the identity window and silently collapse back
+    // into the same "two orphaned Missing entries" bug this gate exists to fix.
+    private const double MinIdentityPositionMm = 5.0;
+    private const double MinIdentityAngleDegrees = 2.0;
+
+    private static double IdentityPositionToleranceMm(ValidationTolerance t)
+        => Math.Max(MinIdentityPositionMm, t.PositionToleranceMm * Math.Max(1.0, t.IdentityGateMultiplier));
+
+    private static double IdentityAngleToleranceDegrees(ValidationTolerance t)
+        => Math.Min(45.0, Math.Max(MinIdentityAngleDegrees, t.AngleToleranceDegrees * Math.Max(1.0, t.IdentityGateMultiplier)));
+
     private static bool ColumnIdentityGate(ColumnElement r, ColumnElement e, ValidationTolerance t)
-        => r.CenterPoint.PlanDistanceTo(e.CenterPoint) <= t.PositionToleranceMm;
+        => r.CenterPoint.PlanDistanceTo(e.CenterPoint) <= IdentityPositionToleranceMm(t);
 
     private static bool BeamIdentityGate(BeamElement r, BeamElement e, ValidationTolerance t)
     {
         var g = Geometry(r, e, t);
-        return g.LineOffset <= t.PositionToleranceMm &&
-               g.OverlapRatio >= Clamp01(t.BeamMinimumOverlapRatio) &&
-               g.AngleDelta <= t.AngleToleranceDegrees;
+        return g.LineOffset <= IdentityPositionToleranceMm(t) &&
+               g.OverlapRatio >= Clamp01(t.BeamMinimumOverlapRatio * 0.5) &&
+               g.AngleDelta <= IdentityAngleToleranceDegrees(t);
     }
 
     private static double ColumnScore(ColumnElement r, ColumnElement e, ValidationTolerance t)

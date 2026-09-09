@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>RevitEtabsValidator.Core.Tests</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Compiles the shared Core comparison engine directly. Core has no Revit,
+         ETABS, or WPF dependency, so this project builds and runs on any
+         machine with the plain .NET SDK - including Linux CI - without the
+         Windows Desktop workload or the Revit/ETABS reference assemblies that
+         the main RevitEtabsValidator.csproj requires. -->
+    <Compile Include="../../Core/**/*.cs" />
+    <!-- Pure folder-scanning/version-picking logic, no ETABSv1 or Windows-only
+         dependency - see EtabsInstallationScanner's own doc comment. -->
+    <Compile Include="../../ETABS/EtabsInstallationScanner.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+</Project>

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -90,13 +91,11 @@ internal static class EtabsAssemblyResolver
         Add(Path.Combine(AppContext.BaseDirectory, "ETABSv1.dll"));
         Add(Path.Combine(Environment.CurrentDirectory, "ETABSv1.dll"));
 
-        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-
-        Add(Path.Combine(programFiles, "Computers and Structures", "ETABS 21", "ETABSv1.dll"));
-        Add(Path.Combine(programFiles, "Computers and Structures", "ETABS 22", "ETABSv1.dll"));
-        Add(Path.Combine(programFilesX86, "Computers and Structures", "ETABS 21", "ETABSv1.dll"));
-        Add(Path.Combine(programFilesX86, "Computers and Structures", "ETABS 22", "ETABSv1.dll"));
+        // Scan every installed "ETABS <version>" folder rather than hardcoding 21/22,
+        // so this resolver keeps working when the engineer has ETABS 23, 24, or a
+        // future release installed instead. See EtabsInstallationScanner for why any
+        // installed version is acceptable here.
+        Add(RevitEtabsValidator.ETABS.EtabsInstallationScanner.FindNewestApiDll());
 
         foreach (var path in yieldTargets)
             yield return path;

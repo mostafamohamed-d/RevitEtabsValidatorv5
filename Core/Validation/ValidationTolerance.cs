@@ -18,6 +18,16 @@ public sealed class ValidationTolerance
     // shorter projected segment overlaps the other segment.
     public double BeamMinimumOverlapRatio { get; set; } = 0.80;
 
+    // The identity gate (deciding whether a Revit/ETABS pair is a candidate for
+    // the SAME physical element at all) is deliberately wider than the pass/fail
+    // tolerances above. If it used the exact same tolerance, any element that
+    // drifted even slightly past tolerance would never become a candidate pair,
+    // so it would surface as two orphaned Missing-in-Revit/Missing-in-ETABS
+    // entries instead of one linked PositionMismatch/RotationMismatch with an
+    // actionable delta. This multiplier controls how far that identity search
+    // window is widened relative to PositionToleranceMm/AngleToleranceDegrees.
+    public double IdentityGateMultiplier { get; set; } = 4.0;
+
     // Project coordinate rule: compare Revit internal coordinates directly with
     // ETABS global coordinates after unit normalization. Do not silently switch
     // to Revit shared coordinates, project base point coordinates, or an inferred

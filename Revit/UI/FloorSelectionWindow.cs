@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -12,9 +15,28 @@ public sealed class FloorScopeItem
     public double EtabsElevationMm { get; init; }
     public bool IsSelected { get; set; }
 
-    public string Display => string.IsNullOrWhiteSpace(EtabsStory)
-        ? $"{RevitLevel}   |   Revit EL {RevitElevationMm:F0} mm   |   ETABS: no mapped story"
-        : $"{RevitLevel}   |   Revit EL {RevitElevationMm:F0} mm   |   ETABS {EtabsStory} (EL {EtabsElevationMm:F0} mm)";
+    /// <summary>True when the level was paired with its ETABS story by name rather
+    /// than by elevation - shown so it is clear which evidence the pairing rests on.</summary>
+    public bool MatchedByName { get; init; }
+
+    /// <summary>Revit level elevation minus the matched ETABS story elevation.</summary>
+    public double ElevationDeltaMm { get; init; }
+
+    public string Display
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(EtabsStory))
+                return $"{RevitLevel}   |   Revit EL {RevitElevationMm:F0} mm   |   ETABS: no mapped story";
+
+            var how = MatchedByName ? "by name" : "by elevation";
+            // A non-zero delta on a correctly paired floor is a real coordination
+            // finding (the two models put the same floor at different heights), so
+            // it is shown here rather than hidden behind the comparison results.
+            var drift = Math.Abs(ElevationDeltaMm) > 1.0 ? $"   |   ΔEL {ElevationDeltaMm:+0;-0;0} mm" : "";
+            return $"{RevitLevel}   |   Revit EL {RevitElevationMm:F0} mm   |   ETABS {EtabsStory} (EL {EtabsElevationMm:F0} mm, {how}){drift}";
+        }
+    }
 }
 
 public sealed class FloorSelectionWindow : Window

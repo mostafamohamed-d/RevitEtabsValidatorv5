@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using System.Reflection;
 using System.IO;
 #if NET8_0_OR_GREATER
@@ -57,24 +59,16 @@ internal static class EtabsAssemblyResolver
         }
     }
 
-    public static string? FindInstalledApiPath()
-    {
-#if ETABS22
-        const string version = "22";
-#elif ETABS21
-        const string version = "21";
-#else
-        return null;
-#endif
-
-        var candidates = new[]
-        {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Computers and Structures", $"ETABS {version}", "ETABSv1.dll"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Computers and Structures", $"ETABS {version}", "ETABSv1.dll")
-        };
-
-        return candidates.FirstOrDefault(File.Exists);
-    }
+    // Any ETABS version works here, not just the one this build's target framework
+    // was compiled against (ETABS21/ETABS22 only pick the *default* HintPath used to
+    // compile against the API surface - see RevitEtabsValidator.csproj). CSI keeps the
+    // handful of OAPI members this project calls (FrameObj/PointObj/PropFrame/Story,
+    // SetPresentUnits, ApplicationStart) stable release to release, so scanning every
+    // installed "ETABS <version>" folder under Program Files and preferring the
+    // newest one found lets the add-in run against ETABS 21, 22, 23, 24, or whatever
+    // is actually installed on the engineer's machine - without a separate build per
+    // ETABS release.
+    public static string? FindInstalledApiPath() => EtabsInstallationScanner.FindNewestApiDll();
 
 #if NET8_0_OR_GREATER
     private static Assembly? ResolveNet8(AssemblyLoadContext context, AssemblyName name)
